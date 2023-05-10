@@ -140,10 +140,13 @@ $(info )
 ggml.o: ggml.c ggml.h
 	$(CC)  $(CFLAGS)   -c $< -o $@
 
-biogpt.o: biogpt.cpp ggml.o
+utils.o: utils.cpp utils.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+biogpt.o: biogpt.cpp ggml.o utils.o
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
 
-biogpt: biogpt.o ggml.o
+biogpt: biogpt.o ggml.o utils.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
