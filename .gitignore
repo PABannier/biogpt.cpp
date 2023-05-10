@@ -1,0 +1,5 @@
+*.o
+biogpt
+*.bin
+*.json
+*.pt
