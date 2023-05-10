@@ -227,7 +227,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
             ctx_size += n_layer*(d_model*ggml_type_size(wtype)); // bi_1
         }
 
-        ctx_size += 4ull*MB; // object overhead
+        ctx_size += 100ull*MB; // object overhead
 
         fprintf(stderr, "%s: ggml ctx size = %7.2f MB\n", __func__, ctx_size/(1024.0*1024.0));
     }
@@ -491,9 +491,17 @@ bool biogpt_eval(
 
         // self-attention
         {
-            struct ggml_tensor * q_curr = ggml_reshape_3d(ctx0, ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].q_proj_w, current), model.layers_decoder[layer_ix].q_proj_b), d_kv, n_head, N);
-            struct ggml_tensor * k_curr = ggml_reshape_3d(ctx0, ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].k_proj_w, current), model.layers_decoder[layer_ix].k_proj_b), d_kv, n_head, N);
-            struct ggml_tensor * v_curr = ggml_reshape_3d(ctx0, ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].v_proj_w, current), model.layers_decoder[layer_ix].v_proj_b), d_kv, n_head, N);
+            struct ggml_tensor * q_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].q_proj_w, current);
+            q_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].q_proj_b, q_curr), q_curr);
+            q_curr = ggml_reshape_3d(ctx0, q_curr, d_kv, n_head, N);
+
+            struct ggml_tensor * k_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].k_proj_w, current);
+            k_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].k_proj_b, k_curr), k_curr);
+            k_curr = ggml_reshape_3d(ctx0, k_curr, d_kv, n_head, N);
+
+            struct ggml_tensor * v_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].v_proj_w, current);
+            v_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].v_proj_b, v_curr), v_curr);
+            v_curr = ggml_reshape_3d(ctx0, v_curr, d_kv, n_head, N);
 
             if (N >= 1) {
                 struct ggml_tensor * k = ggml_view_1d(ctx0, model.memory_k, N*d_model, (ggml_element_size(model.memory_k)*d_model)*(layer_ix*n_positions + n_past));
@@ -503,7 +511,7 @@ bool biogpt_eval(
                 ggml_build_forward_expand(&gf, ggml_cpy(ctx0, v_curr, v));
             }
 
-            struct ggml_tensor * Q = ggml_permute(ctx0, q_curr, 0, 2, 1, 3);  
+            struct ggml_tensor * Q = ggml_permute(ctx0, q_curr, 0, 2, 1, 3);
             struct ggml_tensor * K = ggml_permute(ctx0, k_curr, 0, 2, 1, 3);
 
             struct ggml_tensor * QK = ggml_mul_mat(ctx0, K, Q);
@@ -520,7 +528,7 @@ bool biogpt_eval(
             // transpose V for bmm with weights
             // V_trans = Vmem.view(d_kv, n_head, n_past + N).permute(1, 2, 0, 3).contiguous()
             // [n_past + N, 64, 12]
-            struct ggml_tensor * V_trans = 
+            struct ggml_tensor * V_trans =
                 ggml_cpy(ctx0,
                         ggml_permute(ctx0,
                             ggml_reshape_3d(ctx0,
@@ -542,7 +550,7 @@ bool biogpt_eval(
             current = ggml_cpy(ctx0, attn_outputs_merged, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, d_model, N));
 
             // output projection
-            current = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].o_proj_w, current), model.layers_decoder[layer_ix].o_proj_b);
+            current = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].o_proj_w, current), ggml_repeat(ctx0, model.layers_decoder[layer_ix].o_proj_b, current));
         }
 
         // residual connection
@@ -557,20 +565,22 @@ bool biogpt_eval(
             current = ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_w, current), current), ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_b, current));
 
             // fc1
-            current = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_0_w, current), model.layers_decoder[layer_ix].fc_0_b);
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_0_w, current);
+            current = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].fc_0_b, current), current);
 
             // gelu
             current = ggml_gelu(ctx0, current);
 
             // fc2
-            current = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_1_w, current), model.layers_decoder[layer_ix].fc_1_b);
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_1_w, current);
+            current = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].fc_1_b, current), current);
         }
 
         // residual connection
         current = ggml_add(ctx0, current, inpFF);
 
         // input for next layer
-        inpL = ggml_add(ctx0, current, inpFF); 
+        inpL = ggml_add(ctx0, current, inpFF);
     }
 
     // final norm layer
@@ -604,7 +614,7 @@ void biogpt_vocab::add_special_token(const std::string &token) {
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
 std::vector<biogpt_vocab::id> gpt_tokenize(const biogpt_vocab & vocab, const std::string & text) {
     std::vector<std::string> words;
- 
+
     // first split the text into words
     {
         std::string str = text;
