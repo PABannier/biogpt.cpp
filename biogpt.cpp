@@ -194,7 +194,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         const int n_vocab = hparams.n_vocab;
         const int d_ff    = hparams.d_ff;
         const int d_model = hparams.d_model;
-        const int n_head  = hparams.n_head;
         const int n_layer = hparams.n_layer;
 
         ctx_size += n_vocab*d_model*ggml_type_size(wtype);  // lm_head
@@ -255,7 +254,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         const int n_vocab = hparams.n_vocab;
         const int d_ff    = hparams.d_ff;
         const int d_model = hparams.d_model;
-        const int n_head  = hparams.n_head;
         const int n_layer = hparams.n_layer;
 
         model.layers_decoder.resize(n_layer);
@@ -437,7 +435,6 @@ bool biogpt_eval(
     const int n_vocab     = hparams.n_vocab;
     const int n_layer     = hparams.n_layer;
     const int n_head      = hparams.n_head;
-    const int d_ff        = hparams.d_ff;
     const int d_model     = hparams.d_model;
     const int n_positions = hparams.n_positions;
 
@@ -804,7 +801,7 @@ int main(int argc, char **argv) {
     size_t mem_per_token = 0;
     biogpt_eval(model, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);
 
-    for (int i = embed.size(); i < embed_inp.size() + params.n_predict; i++) {
+    for (int i = embed.size(); i < (int) embed_inp.size() + params.n_predict; i++) {
         // predict
         if (embed.size() > 0) {
             const int64_t t_start_us = ggml_time_us();
@@ -820,7 +817,7 @@ int main(int argc, char **argv) {
         n_past += embed.size();
         embed.clear();
 
-        if (i >= embed_inp.size()) {
+        if (i >= (int) embed_inp.size()) {
             // sample next token
             const int   top_k = params.top_k;
             const float top_p = params.top_p;
@@ -839,9 +836,9 @@ int main(int argc, char **argv) {
 
             embed.push_back(id);
         } else {
-            for (int k = i; k < embed_inp.size(); k++) {
+            for (int k = i; k < (int) embed_inp.size(); k++) {
                 embed.push_back(embed_inp[k]);
-                if (embed.size() > params.n_batch) {
+                if ((int) embed.size() > params.n_batch) {
                     break;
                 }
             }
