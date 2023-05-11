@@ -1,5 +1,7 @@
 #include "ggml.h"
+#include "utils.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -7,6 +9,8 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <random>
+#include <regex>
 #include <vector>
 
 
@@ -20,13 +24,16 @@ struct biogpt_vocab {
 
     std::map<token, id> token_to_id;
     std::map<id, token> id_to_token;
+    std::vector<std::string> special_tokens;
+
+    void add_special_token(const std::string &token);
 };
 
 // base params for BioGPT
 struct biogpt_hparams {
     int32_t n_vocab     = 42384;
     int32_t d_ff        = 4096;
-    int32_t d_model     = 1024;  
+    int32_t d_model     = 1024;
     int32_t n_layer     = 24;
     int32_t n_head      = 16;
     int32_t f16         = 1;
@@ -63,11 +70,8 @@ struct biogpt_layer_decoder {
 struct biogpt_model {
     biogpt_hparams hparams;
 
-    // embed tokens
-    struct ggml_tensor * embed_tokens;
-
-    // embed positions
-    struct ggml_tensor * embed_pos;
+    struct ggml_tensor * embed_tokens;  // token embeddings
+    struct ggml_tensor * embed_pos;  // position embeddings
 
     // final layer norm
     struct ggml_tensor * ln_w;
@@ -75,6 +79,10 @@ struct biogpt_model {
 
     // lm head
     struct ggml_tensor * lm_head;
+
+    // key + value memory
+    struct ggml_tensor * memory_k;
+    struct ggml_tensor * memory_v;
 
     std::vector<biogpt_layer_decoder> layers_decoder;
 
@@ -186,7 +194,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         const int n_vocab = hparams.n_vocab;
         const int d_ff    = hparams.d_ff;
         const int d_model = hparams.d_model;
-        const int n_head  = hparams.n_head;
         const int n_layer = hparams.n_layer;
 
         ctx_size += n_vocab*d_model*ggml_type_size(wtype);  // lm_head
@@ -220,7 +227,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
             ctx_size += n_layer*(d_model*ggml_type_size(wtype)); // bi_1
         }
 
-        ctx_size += 4ull*MB; // object overhead
+        ctx_size += 100ull*MB; // object overhead
 
         fprintf(stderr, "%s: ggml ctx size = %7.2f MB\n", __func__, ctx_size/(1024.0*1024.0));
     }
@@ -247,7 +254,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         const int n_vocab = hparams.n_vocab;
         const int d_ff    = hparams.d_ff;
         const int d_model = hparams.d_model;
-        const int n_head  = hparams.n_head;
         const int n_layer = hparams.n_layer;
 
         model.layers_decoder.resize(n_layer);
@@ -320,6 +326,25 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         }
     }
 
+    // key + value memory
+    {
+        const auto & hparams  = model.hparams;
+
+        const int d_model     = hparams.d_model;
+        const int n_layer     = hparams.n_layer;
+        const int n_positions = hparams.n_positions;
+
+        const int n_mem       = n_layer*n_positions;
+        const int n_elements  = n_mem*d_model;
+
+        model.memory_k = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
+        model.memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
+
+        const size_t memory_size = ggml_nbytes(model.memory_k) + ggml_nbytes(model.memory_v);
+
+        printf("%s: memory size = %8.2f MB, n_mem = %d\n", __func__, memory_size/1024.0/1024.0, n_mem);
+    }
+
     // load weights
     {
         size_t total_size = 0;
@@ -346,7 +371,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
             }
 
             std::string name;
-            std::vector<char> buf(length);  
+            std::vector<char> buf(length);
             infile.read(&buf[0], buf.size());
             name.assign(&buf[0], buf.size());
 
@@ -366,7 +391,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
                         __func__, name.data(), tensor->ne[0], tensor->ne[1], ne[0], ne[1]);
                 return false;
             }
-            
+
             const size_t element_size = (ftype == 0) ? sizeof(float) :sizeof(ggml_fp16_t);
             if (nelements*element_size != ggml_nbytes(tensor)) {
                 fprintf(stderr, "%s: tensor '%s' has wrong size in model file: got %zu, expected %zu\n",
@@ -396,22 +421,470 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
     return true;
 }
 
+bool biogpt_eval(
+    const biogpt_model& model,
+    const int n_threads,
+    const int n_past,
+    const std::vector<biogpt_vocab::id> & embed_inp,
+          std::vector<float>            & logits,
+          size_t                        & mem_per_token) {
+    const int N = embed_inp.size();
 
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <model>\n", argv[0]);
-        return -1;
+    const auto & hparams = model.hparams;
+
+    const int n_vocab     = hparams.n_vocab;
+    const int n_layer     = hparams.n_layer;
+    const int n_head      = hparams.n_head;
+    const int d_model     = hparams.d_model;
+    const int n_positions = hparams.n_positions;
+
+    const int d_kv        = d_model/n_head;
+
+    static size_t buf_size = 256u*1024*1024;
+    static void * buf      = malloc(buf_size);
+
+    if (mem_per_token > 0 && mem_per_token*N > buf_size) {
+        const size_t buf_size_new = 1.1*(mem_per_token*N);  // add 10% to account for ggml object overhead
+
+        buf_size = buf_size_new;
+        buf = realloc(buf, buf_size);
+        if (buf == nullptr) {
+            fprintf(stderr, "%s: failed to allocate %zu bytes\n", __func__, buf_size);
+            return false;
+        }
     }
 
-    const char * path_model = argv[1];
+    struct ggml_init_params params = {
+        .mem_size   = buf_size,
+        .mem_buffer = buf,
+        .no_alloc   = false,
+    };
+
+    struct ggml_context * ctx0 = ggml_init(params);
+    struct ggml_cgraph    gf   = {};
+    gf.n_threads = n_threads;
+
+    struct ggml_tensor * embd = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
+    memcpy(embd->data, embed_inp.data(), N*ggml_element_size(embd));
+
+    struct ggml_tensor * positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
+    for (int i = 0; i < N; ++i) {
+        ((int32_t *) positions->data)[i] = n_past + i;
+    }
+
+    struct ggml_tensor *inpL = ggml_add(ctx0, ggml_get_rows(ctx0, model.embed_pos, positions), ggml_get_rows(ctx0, model.embed_tokens, embd));
+
+    for (int layer_ix = 0; layer_ix < n_layer; ++layer_ix) {
+        struct ggml_tensor * current;
+
+        // self-attention layer norm
+        {
+            current = ggml_norm(ctx0, inpL);
+            current = ggml_add(
+                ctx0,
+                ggml_mul(
+                    ctx0,
+                    ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_0_w, current), current),
+                    ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_0_b, current)
+            );
+        }
+
+        // self-attention
+        {
+            struct ggml_tensor * q_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].q_proj_w, current);
+            q_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].q_proj_b, q_curr), q_curr);
+            q_curr = ggml_reshape_3d(ctx0, q_curr, d_kv, n_head, N);
+
+            struct ggml_tensor * k_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].k_proj_w, current);
+            k_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].k_proj_b, k_curr), k_curr);
+            k_curr = ggml_reshape_3d(ctx0, k_curr, d_kv, n_head, N);
+
+            struct ggml_tensor * v_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].v_proj_w, current);
+            v_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].v_proj_b, v_curr), v_curr);
+            v_curr = ggml_reshape_3d(ctx0, v_curr, d_kv, n_head, N);
+
+            // key + value memory
+            if (N >= 1) {
+                struct ggml_tensor * k = ggml_view_1d(ctx0, model.memory_k, N*d_model, (ggml_element_size(model.memory_k)*d_model)*(layer_ix*n_positions + n_past));
+                struct ggml_tensor * v = ggml_view_1d(ctx0, model.memory_v, N*d_model, (ggml_element_size(model.memory_v)*d_model)*(layer_ix*n_positions + n_past));
+
+                ggml_build_forward_expand(&gf, ggml_cpy(ctx0, k_curr, k));
+                ggml_build_forward_expand(&gf, ggml_cpy(ctx0, v_curr, v));
+            }
+
+            // (d_kv, N, n_head)
+            struct ggml_tensor * Q = ggml_permute(ctx0, ggml_cpy(ctx0, q_curr, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, d_kv, n_head, N)), 0, 2, 1, 3);
+
+            // (d_kv, N + n_past, n_head)
+            struct ggml_tensor * K =
+                ggml_permute(ctx0,
+                        ggml_reshape_3d(ctx0,
+                            ggml_view_1d(ctx0, model.memory_k, (n_past + N)*d_model, layer_ix*n_positions*ggml_element_size(model.memory_k)*d_model),
+                            d_kv, n_head, n_past + N),
+                        0, 2, 1, 3);
+
+            // (N + n_past, N, n_head)
+            struct ggml_tensor * QK = ggml_mul_mat(ctx0, K, Q);
+
+            // scale by head_dim
+            struct ggml_tensor * QK_scaled = ggml_scale(ctx0, QK, ggml_new_f32(ctx0, 1.0f/sqrt(float(d_kv))));
+
+            // mask forward context
+            struct ggml_tensor * QK_masked = ggml_diag_mask_inf(ctx0, QK_scaled, n_past);
+
+            // softmax
+            struct ggml_tensor * attn_weights = ggml_soft_max(ctx0, QK_masked);
+
+            // [N + n_past, d_kv, n_head]
+            struct ggml_tensor * V_trans =
+                ggml_cpy(ctx0,
+                        ggml_permute(ctx0,
+                            ggml_reshape_3d(ctx0,
+                                ggml_view_1d(ctx0, model.memory_v, (n_past + N)*d_model, layer_ix*n_positions*ggml_element_size(model.memory_v)*d_model),
+                                d_kv, n_head, n_past + N),
+                        1, 2, 0, 3),
+                        ggml_new_tensor_3d(ctx0, model.memory_v->type, n_past + N, d_kv, n_head)
+            );
+
+            // [d_kv, N, n_head]
+            struct ggml_tensor * attn_outputs = ggml_mul_mat(ctx0, V_trans, attn_weights);
+
+            // [d_kv, n_head, N]
+            struct ggml_tensor * attn_outputs_merged = ggml_permute(ctx0, attn_outputs, 0, 2, 1, 3);
+
+            // [d_model, N]
+            current = ggml_cpy(ctx0, attn_outputs_merged, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, d_model, N));
+
+            // output projection
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].o_proj_w, current);
+            current = ggml_add(ctx0, current, ggml_repeat(ctx0, model.layers_decoder[layer_ix].o_proj_b, current));
+        }
+
+        // residual connection
+        current = ggml_add(ctx0, current, inpL);
+
+        struct ggml_tensor * inpFF = current;
+
+        // feed forward
+        {
+            // final layer norm
+            current = ggml_norm(ctx0, inpFF);
+            current = ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_w, current), current), ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_b, current));
+
+            // fc1
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_0_w, current);
+            current = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].fc_0_b, current), current);
+
+            // gelu
+            current = ggml_gelu(ctx0, current);
+
+            // fc2
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].fc_1_w, current);
+            current = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].fc_1_b, current), current);
+        }
+
+        // residual connection
+        inpL = ggml_add(ctx0, current, inpFF);
+    }
+
+    // final norm layer
+    inpL = ggml_norm(ctx0, inpL);
+    inpL = ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, model.ln_w, inpL), inpL), ggml_repeat(ctx0, model.ln_b, inpL));
+
+    // lm head
+    inpL = ggml_mul_mat(ctx0, model.lm_head, inpL);
+
+    // run computation
+    ggml_build_forward_expand(&gf, inpL);
+    ggml_graph_compute       (ctx0, &gf);
+
+    // return result for just the last token
+    logits.resize(n_vocab);
+    memcpy(logits.data(), (float *) ggml_get_data(inpL) + (n_vocab*(N-1)), sizeof(float)*n_vocab);
+
+    if (mem_per_token == 0) {
+        mem_per_token = ggml_used_mem(ctx0)/N;
+    }
+
+    ggml_free(ctx0);
+
+    return true;
+}
+
+void biogpt_vocab::add_special_token(const std::string &token) {
+    special_tokens.push_back(token);
+}
+
+// Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
+std::vector<biogpt_vocab::id> gpt_tokenize(const biogpt_vocab & vocab, const std::string & text) {
+    std::vector<std::string> words;
+
+    // first split the text into words
+    {
+        std::string str = text;
+        std::string pat = R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
+
+        // Generate the subpattern from the special_tokens vector if it's not empty
+        if (!vocab.special_tokens.empty()) {
+            std::string special_tokens_subpattern;
+            for (const auto &token : vocab.special_tokens) {
+                if (!special_tokens_subpattern.empty()) {
+                    special_tokens_subpattern += "|";
+                }
+                special_tokens_subpattern += token;
+            }
+
+            // Modify the regex pattern with the generated special tokens subpattern
+            pat = special_tokens_subpattern + "|" + pat;
+        }
+
+        std::regex re(pat);
+        std::smatch m;
+
+        while (std::regex_search(str, m, re)) {
+            for (auto x : m) {
+                words.push_back(x);
+            }
+            str = m.suffix();
+        }
+    }
+
+    // find the longest tokens that form the words:
+    std::vector<biogpt_vocab::id> tokens;
+    for (const auto & word : words) {
+        if (word.size() == 0) continue;
+
+        int i = 0;
+        int n = word.size();
+        while (i < n) {
+            int j = n;
+            while (j > i) {
+                auto it = vocab.token_to_id.find(word.substr(i, j-i));
+                if (it != vocab.token_to_id.end()) {
+                    tokens.push_back(it->second);
+                    i = j;
+                    break;
+                }
+                --j;
+            }
+            if (i == n) {
+                break;
+            }
+            if (j == i) {
+                auto sub = word.substr(i, 1);
+                if (vocab.token_to_id.find(sub) != vocab.token_to_id.end()) {
+                    tokens.push_back(vocab.token_to_id.at(sub));
+                } else {
+                    fprintf(stderr, "%s: unknown token '%s'\n", __func__, sub.data());
+                }
+                ++i;
+            }
+        }
+    }
+
+    return tokens;
+}
+
+biogpt_vocab::id biogpt_sample_top_k_top_p(
+        const biogpt_vocab & vocab,
+        const float * logits,
+        int    top_k,
+        double top_p,
+        double temp,
+        std::mt19937 & rng) {
+    int n_logits = vocab.id_to_token.size();
+
+    std::vector<std::pair<double, biogpt_vocab::id>> logits_id;
+    logits_id.reserve(n_logits);
+
+    {
+        const double scale = 1.0/temp;
+        for (int i = 0; i < n_logits; ++i) {
+            logits_id.push_back(std::make_pair(logits[i]*scale, i));
+        }
+    }
+
+    // find the top K tokens
+    std::partial_sort(
+            logits_id.begin(),
+            logits_id.begin() + top_k, logits_id.end(),
+            [](const std::pair<double, biogpt_vocab::id> & a, const std::pair<double, biogpt_vocab::id> & b) {
+        return a.first > b.first;
+    });
+
+    logits_id.resize(top_k);
+
+    double maxl = -INFINITY;
+    for (const auto & kv : logits_id) {
+        maxl = std::max(maxl, kv.first);
+    }
+
+    // compute probs for the top K tokens
+    std::vector<double> probs;
+    probs.reserve(logits_id.size());
+
+    double sum = 0.0;
+    for (const auto & kv : logits_id) {
+        double p = exp(kv.first - maxl);
+        probs.push_back(p);
+        sum += p;
+    }
+
+    // normalize the probs
+    for (auto & p : probs) {
+        p /= sum;
+    }
+
+    if (top_p < 1.0f) {
+        double cumsum = 0.0f;
+        for (int i = 0; i < top_k; i++) {
+            cumsum += probs[i];
+            if (cumsum >= top_p) {
+                top_k = i + 1;
+                probs.resize(top_k);
+                logits_id.resize(top_k);
+                break;
+            }
+        }
+
+        cumsum = 1.0/cumsum;
+        for (int i = 0; i < (int) probs.size(); i++) {
+            probs[i] *= cumsum;
+        }
+    }
+
+    std::discrete_distribution<> dist(probs.begin(), probs.end());
+    int idx = dist(rng);
+
+    return logits_id[idx].second;
+}
+
+
+int main(int argc, char **argv) {
+    const int64_t t_main_start_us = ggml_time_us();
+
+    biogpt_params params;
+
+    if (biogpt_params_parse(argc, argv, params) == false) {
+        return 1;
+    }
+
+    if(params.seed < 0) {
+        params.seed = time(NULL);
+    }
+
+    printf("%s: seed = %d\n", __func__, params.seed);
+
+    std::mt19937 rng(params.seed);
+
+    int64_t t_load_us = 0;
 
     biogpt_vocab vocab;
     biogpt_model model;
 
-    if(!biogpt_model_load(path_model, model, vocab)) {
-        fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, path_model);
-        return 1;
+    // load the model
+    {
+        const int64_t t_start_us = ggml_time_us();
+
+        if(!biogpt_model_load(params.model, model, vocab)) {
+            fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
+            return 1;
+        }
+
+        t_load_us = ggml_time_us() - t_start_us;
     }
 
+    int n_past = 0;
+
+    int64_t t_sample_us  = 0;
+    int64_t t_predict_us = 0;
+
+    std::vector<float> logits;
+
+    // tokenize the prompt
+    std::vector<biogpt_vocab::id> embed_inp = ::gpt_tokenize(vocab, params.prompt);
+
+    params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
+
+    printf("%s: number of tokens in prompt = %zu\n", __func__, embed_inp.size());
+    printf("\n");
+
+    std::vector<biogpt_vocab::id> embed;
+
+    // determine the required inference memory per token
+    size_t mem_per_token = 0;
+    biogpt_eval(model, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);
+
+    for (int i = embed.size(); i < (int) embed_inp.size() + params.n_predict; i++) {
+        // predict
+        if (embed.size() > 0) {
+            const int64_t t_start_us = ggml_time_us();
+
+            if(!biogpt_eval(model, params.n_threads, n_past, embed, logits, mem_per_token)) {
+                printf("Failed to predict\n");
+                return 1;
+            }
+
+            t_predict_us += ggml_time_us() - t_start_us;
+        }
+
+        n_past += embed.size();
+        embed.clear();
+
+        if (i >= (int) embed_inp.size()) {
+            // sample next token
+            const int   top_k = params.top_k;
+            const float top_p = params.top_p;
+            const float temp  = params.temp;
+
+            const int n_vocab = model.hparams.n_vocab;
+
+            biogpt_vocab::id id = 0;
+
+            // generation
+            {
+                const int64_t t_start_sample_us = ggml_time_us();
+                id = biogpt_sample_top_k_top_p(vocab, logits.data() + (logits.size() - n_vocab), top_k, top_p, temp, rng);
+                t_sample_us += ggml_time_us() - t_start_sample_us;
+            }
+
+            embed.push_back(id);
+        } else {
+            for (int k = i; k < (int) embed_inp.size(); k++) {
+                embed.push_back(embed_inp[k]);
+                if ((int) embed.size() > params.n_batch) {
+                    break;
+                }
+            }
+            i += embed.size() - 1;
+        }
+
+        // display text
+        for (auto id : embed) {
+            printf("%s", vocab.id_to_token[id].c_str());
+        }
+        fflush(stdout);
+
+        // end of text token
+        if (embed.back() == model.hparams.n_vocab) {
+            break;
+        }
+    }
+
+    // report timing
+    {
+        const int64_t t_main_end_us = ggml_time_us();
+
+        printf("\n\n");
+        printf("%s: mem per token = %8zu bytes\n", __func__, mem_per_token);
+        printf("%s:     load time = %8.2f ms\n", __func__, t_load_us/1000.0f);
+        printf("%s:   sample time = %8.2f ms\n", __func__, t_sample_us/1000.0f);
+        printf("%s:  predict time = %8.2f ms / %.2f ms per token\n", __func__, t_predict_us/1000.0f, t_predict_us/1000.0f/n_past);
+        printf("%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
+    }
+
+
     ggml_free(model.ctx);
+
+    return 0;
 }
