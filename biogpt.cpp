@@ -503,6 +503,7 @@ bool biogpt_eval(
             v_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].v_proj_b, v_curr), v_curr);
             v_curr = ggml_reshape_3d(ctx0, v_curr, d_kv, n_head, N);
 
+            // key + value memory
             if (N >= 1) {
                 struct ggml_tensor * k = ggml_view_1d(ctx0, model.memory_k, N*d_model, (ggml_element_size(model.memory_k)*d_model)*(layer_ix*n_positions + n_past));
                 struct ggml_tensor * v = ggml_view_1d(ctx0, model.memory_v, N*d_model, (ggml_element_size(model.memory_v)*d_model)*(layer_ix*n_positions + n_past));
@@ -511,9 +512,18 @@ bool biogpt_eval(
                 ggml_build_forward_expand(&gf, ggml_cpy(ctx0, v_curr, v));
             }
 
-            struct ggml_tensor * Q = ggml_permute(ctx0, q_curr, 0, 2, 1, 3);
-            struct ggml_tensor * K = ggml_permute(ctx0, k_curr, 0, 2, 1, 3);
+            // (d_kv, N, n_head)
+            struct ggml_tensor * Q = ggml_permute(ctx0, ggml_cpy(ctx0, q_curr, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, d_kv, n_head, N)), 0, 2, 1, 3);
 
+            // (d_kv, N + n_past, n_head)
+            struct ggml_tensor * K =
+                ggml_permute(ctx0,
+                        ggml_reshape_3d(ctx0,
+                            ggml_view_1d(ctx0, model.memory_k, (n_past + N)*d_model, layer_ix*n_positions*ggml_element_size(model.memory_k)*d_model),
+                            d_kv, n_head, n_past + N),
+                        0, 2, 1, 3);
+
+            // (N + n_past, N, n_head)
             struct ggml_tensor * QK = ggml_mul_mat(ctx0, K, Q);
 
             // scale by head_dim
@@ -525,9 +535,7 @@ bool biogpt_eval(
             // softmax
             struct ggml_tensor * attn_weights = ggml_soft_max(ctx0, QK_masked);
 
-            // transpose V for bmm with weights
-            // V_trans = Vmem.view(d_kv, n_head, n_past + N).permute(1, 2, 0, 3).contiguous()
-            // [n_past + N, 64, 12]
+            // [N + n_past, d_kv, n_head]
             struct ggml_tensor * V_trans =
                 ggml_cpy(ctx0,
                         ggml_permute(ctx0,
@@ -538,19 +546,18 @@ bool biogpt_eval(
                         ggml_new_tensor_3d(ctx0, model.memory_v->type, n_past + N, d_kv, n_head)
             );
 
-            // attn_outputs = transpose(V) * att_weights
-            // [64, N, 12]
+            // [d_kv, N, n_head]
             struct ggml_tensor * attn_outputs = ggml_mul_mat(ctx0, V_trans, attn_weights);
 
-            // attn_outputs.transpose(0, 2, 1, 3)
-            // [64, 12, N]
+            // [d_kv, n_head, N]
             struct ggml_tensor * attn_outputs_merged = ggml_permute(ctx0, attn_outputs, 0, 2, 1, 3);
 
-            // current = attn_outputs_merged.contiguous().view(d_model, N)
+            // [d_model, N]
             current = ggml_cpy(ctx0, attn_outputs_merged, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, d_model, N));
 
             // output projection
-            current = ggml_add(ctx0, ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].o_proj_w, current), ggml_repeat(ctx0, model.layers_decoder[layer_ix].o_proj_b, current));
+            current = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].o_proj_w, current);
+            current = ggml_add(ctx0, current, ggml_repeat(ctx0, model.layers_decoder[layer_ix].o_proj_b, current));
         }
 
         // residual connection
@@ -577,9 +584,6 @@ bool biogpt_eval(
         }
 
         // residual connection
-        current = ggml_add(ctx0, current, inpFF);
-
-        // input for next layer
         inpL = ggml_add(ctx0, current, inpFF);
     }
 
