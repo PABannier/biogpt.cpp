@@ -694,6 +694,37 @@ std::vector<biogpt_vocab::id> gpt_tokenize(
     return tokens;
 }
 
+std::string gpt_decode(std::vector<std::string>& tokens, const std::string& lang) {
+    // remove bpe
+    std::transform(tokens.begin(), tokens.end(), tokens.begin(), [](std::string t) {
+        t = std::regex_replace(t, std::regex(" "), "");
+        t = std::regex_replace(t, std::regex("</w>"), " ");
+        t = std::regex_replace(t, std::regex("</s>"), " ");
+        return t;
+    });
+
+    // join the elements of the vector into a single string
+    std::string joined_str;
+    for (const auto& token : tokens) {
+        joined_str += token;
+    }
+
+    // split the joined string into individual tokens
+    std::vector<std::string> clean_tokens;
+    {
+        std::stringstream stream(joined_str);
+        std::string token;
+        while (stream >> token) {
+            clean_tokens.push_back(token);
+        }
+    }
+
+    // detokenize
+    std::string out = moses_detokenize(clean_tokens, lang);
+
+    return out;
+}
+
 biogpt_vocab::id biogpt_sample_top_k_top_p(
         const biogpt_vocab & vocab,
         const float * logits,
@@ -813,7 +844,6 @@ int main(int argc, char **argv) {
     // tokenize the prompt
     params.prompt = "HER2 is a protein. It is a trans-membrane receptor.";
     std::vector<biogpt_vocab::id> embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
-    // std::vector<biogpt_vocab::id> embed_inp = { 2, 6693, 21 };
 
     params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
 
@@ -874,10 +904,12 @@ int main(int argc, char **argv) {
             i += embed.size() - 1;
         }
 
-        // display text
+        std::vector<std::string> tokens;
         for (auto id : embed) {
-            printf("%s", vocab.id_to_token[id].c_str());
+            tokens.push_back(vocab.id_to_token[id]);
         }
+        std::string decoded_word = gpt_decode(tokens, params.lang);
+        printf("%s ", decoded_word.c_str());
         fflush(stdout);
 
         // end of text token
