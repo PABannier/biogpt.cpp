@@ -140,19 +140,25 @@ $(info )
 mosestokenizer.o: mosestokenizer.cpp mosestokenizer.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-mosestokenizer: mosestokenizer.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
 ggml.o: ggml.c ggml.h
 	$(CC)  $(CFLAGS)   -c $< -o $@
 
 utils.o: utils.cpp utils.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-biogpt.o: biogpt.cpp ggml.o utils.o
+bpe.o: bpe.cpp bpe.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+biogpt.o: biogpt.cpp ggml.o utils.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
 
-biogpt: biogpt.o ggml.o utils.o
+bpe: bpe.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+mosestokenizer: mosestokenizer.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+biogpt: biogpt.o ggml.o utils.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
