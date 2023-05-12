@@ -18,6 +18,7 @@ struct biogpt_params {
 
     std::string model = "./ggml_weights/ggml-model.bin"; // model path
     std::string prompt;
+    std::string lang;
 };
 
 bool biogpt_params_parse(int argc, char ** argv, biogpt_params & params);
