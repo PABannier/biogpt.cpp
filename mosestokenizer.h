@@ -13,3 +13,5 @@
 
 
 std::vector<std::string> moses_tokenize(const std::string& text, const std::string& lang);
+
+std::string moses_detokenize(std::vector<std::string>& in_tokens, const std::string& lang);

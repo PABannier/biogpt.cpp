@@ -1,4 +1,5 @@
 #include "mosestokenizer.h"
+#include <unordered_map>
 #include <vector>
 #include <numeric>
 #include <string>
@@ -96,13 +97,17 @@ namespace re_patterns {
     std::string isAlpha = perluniprops_chars("isAlpha");
     std::string isLower = perluniprops_chars("isLower");
     std::string isN     = perluniprops_chars("isN");
+    std::string isSc    = perluniprops_chars("isSc");
 
     std::regex DEDUPLICATE_SPACE("\\s+");
     std::regex ASCII_JUNK       ("[\\x00-\\x1F]");
 
     std::regex AGGRESSIVE_HYPHEN_SPLIT("(["+ isAlnum +"])\\-(?=[" + isAlnum + "])");
+    std::regex AGGRESSIVE_HYPHEN_SPLIT_DETOK(" @-@");
 
     std::regex PAD_NOT_ISALNUM("([^" + isAlnum + "\\s\\.'\\`\\,\\-])");
+
+    std::regex ONE_SPACE(" {2,}");
 
     std::vector<std::pair<std::regex, std::string>> COMMA_SEPARATE = {
         { std::regex("([^" + isN + "])[,]"), "$1 , " },
@@ -134,6 +139,34 @@ namespace re_patterns {
         { std::regex("\"") , "&quot;" },
         { std::regex("\\["), "&#91;"  },
         { std::regex("\\]")  , "&#93;"  }
+    };
+
+    std::pair<std::regex, std::string> UNESCAPE_FACTOR_SEPARATOR("&#124;", "|");
+    std::pair<std::regex, std::string> UNESCAPE_LEFT_ANGLE_BRACKET("&lt;", "<");
+    std::pair<std::regex, std::string> UNESCAPE_RIGHT_ANGLE_BRACKET("&gt;", ">");
+    std::pair<std::regex, std::string> UNESCAPE_DOUBLE_QUOTE("&quot;", "\"");
+    std::pair<std::regex, std::string> UNESCAPE_SINGLE_QUOTE("&apos;", "'");
+    std::pair<std::regex, std::string> UNESCAPE_SYNTAX_NONTERMINAL_LEFT("&#91;", "[");
+    std::pair<std::regex, std::string> UNESCAPE_SYNTAX_NONTERMINAL_RIGHT("&#93;", "]");
+    std::pair<std::regex, std::string> UNESCAPE_AMPERSAND("&amp;", "&");
+
+    // The legacy regexes are used to support outputs from older Moses versions.
+    std::pair<std::regex, std::string> UNESCAPE_FACTOR_SEPARATOR_LEGACY("&bar;", "|");
+    std::pair<std::regex, std::string> UNESCAPE_SYNTAX_NONTERMINAL_LEFT_LEGACY("&bra;", "[");
+    std::pair<std::regex, std::string> UNESCAPE_SYNTAX_NONTERMINAL_RIGHT_LEGACY("&ket;", "]");
+
+    std::vector<std::pair<std::regex, std::string>> UNESCAPE_XML = {
+        UNESCAPE_FACTOR_SEPARATOR_LEGACY,
+        UNESCAPE_FACTOR_SEPARATOR,
+        UNESCAPE_LEFT_ANGLE_BRACKET,
+        UNESCAPE_RIGHT_ANGLE_BRACKET,
+        UNESCAPE_SYNTAX_NONTERMINAL_LEFT_LEGACY,
+        UNESCAPE_SYNTAX_NONTERMINAL_RIGHT_LEGACY,
+        UNESCAPE_DOUBLE_QUOTE,
+        UNESCAPE_SINGLE_QUOTE,
+        UNESCAPE_SYNTAX_NONTERMINAL_LEFT,
+        UNESCAPE_SYNTAX_NONTERMINAL_RIGHT,
+        UNESCAPE_AMPERSAND
     };
 
     std::regex NON_SPECIFIC_APOSTROPHE("\'");
@@ -318,6 +351,114 @@ std::vector<std::string> moses_tokenize(const std::string& text, const std::stri
     }
 
     return tokens;
+}
+
+std::string moses_detokenize(std::vector<std::string>& in_tokens, const std::string& lang) {
+    std::string text;
+    std::vector<std::string> tokens;
+
+    // Convert the list of tokens into a string and pad it with spaces.
+    {
+        text += " ";
+        for (auto& token : in_tokens) {
+            text += token + " ";
+        }
+    }
+
+    // Detokenize the agressive hyphen split.
+    text = std::regex_replace(text, AGGRESSIVE_HYPHEN_SPLIT_DETOK, "-");
+
+    // Unescape XML symbols.
+    for (auto& pair : UNESCAPE_XML) {
+        std::regex reg_pat = pair.first;
+        std::string substitution = pair.second;
+        std::regex_replace(text, reg_pat, substitution);
+    }
+
+    std::unordered_map<std::string, int> quote_counts = {{"'", 0}, {"\"", 0}, {"``", 0}, {"`", 0}, {"''", 0}};
+
+    std::string prepend_space = " ";
+    std::string detokenized_text = "";
+
+    // Split text into tokens.
+    {
+        std::stringstream stream(text);
+        std::string token;
+
+        while (stream >> token) {
+            tokens.push_back(token);
+        }
+    }
+
+    for (int i = 0; i < (int) tokens.size(); i++) {
+        std::string token = tokens[i];
+
+        if (std::regex_search(token, std::regex("^[" + isSc + "\\(\\[\\{\\¿\\¡]+$"))) {
+            detokenized_text += prepend_space + token;
+            prepend_space = "";
+        }
+
+        else if (std::regex_search(token, std::regex("^\\[\\,\\.\\?\\!\\:\\;\\\\\\%\\}\\]\\)+$"))) {
+            if (lang == "fr" && std::regex_search(token, std::regex("^\\[\\?\\!\\:\\;\\\\\\%\\]+$"))) {
+                detokenized_text += " ";
+            }
+            detokenized_text += token;
+            prepend_space = " ";
+        }
+
+        else if (lang == "en" && i > 0 && std::regex_search(token, std::regex("^['][" + isAlpha + "]"))) {
+            detokenized_text += token;
+            prepend_space = " ";
+        }
+
+        else if (lang == "fr" || lang == "it" || lang == "ga") {
+            if (i <= (int) tokens.size() - 2 && std::regex_search(token, std::regex("[" + isAlpha + "][']$")) && std::regex_search(tokens[i + 1], std::regex("^[" + isAlpha + "]"))) {
+                detokenized_text += prepend_space + token;
+                prepend_space = "";
+            }
+        }
+
+        else if (std::regex_search(token, std::regex("^['\"„“`]+$"))) {
+            std::string normalized_quo = token;
+
+            if (std::regex_search(token, std::regex("^[„“”]+$"))) {
+                normalized_quo = "\"";
+            }
+
+            if (quote_counts.find(normalized_quo) == quote_counts.end()) {
+                quote_counts[normalized_quo] = 0;
+            }
+
+            if (quote_counts[normalized_quo] % 2 == 0) {
+                if (lang == "en" && token == "'" && i > 0 && std::regex_search(tokens[i - 1], std::regex("[s]$"))) {
+                    detokenized_text += token;
+                    prepend_space = " ";
+                }
+                else {
+                    detokenized_text += prepend_space + token;
+                    prepend_space = "";
+                    quote_counts[normalized_quo] += 1;
+                }
+            }
+            else {
+                detokenized_text += token;
+                prepend_space = " ";
+                quote_counts[normalized_quo] += 1;
+            }
+        }
+
+        else {
+            detokenized_text += prepend_space + token;
+            prepend_space = " ";
+        }
+    }
+
+    detokenized_text = std::regex_replace(detokenized_text, ONE_SPACE, " ");
+
+    // Remove heading and trailing spaces
+    detokenized_text = std::regex_replace(detokenized_text, std::regex("^\\s+|\\s+$"), "");
+
+    return detokenized_text;
 }
 
 void unit_test(std::string str, std::vector<std::string> expected_tokens) {
