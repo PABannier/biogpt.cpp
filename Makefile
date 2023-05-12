@@ -137,6 +137,12 @@ $(info )
 # Build library
 #
 
+mosestokenizer.o: mosestokenizer.cpp mosestokenizer.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+mosestokenizer: mosestokenizer.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
 ggml.o: ggml.c ggml.h
 	$(CC)  $(CFLAGS)   -c $< -o $@
 
@@ -150,4 +156,4 @@ biogpt: biogpt.o ggml.o utils.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -vf *.o biogpt
+	rm -vf *.o biogpt mosestokenizer
