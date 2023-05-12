@@ -39,6 +39,18 @@ def parse_vocab(dir_model, outfile):
         outfile.write(text)
 
 
+def parse_bpe_merges(dir_model, outfile):
+    with open(dir_model / "merges.txt", "r", encoding="utf-8") as infile:
+        bpe_merges = infile.read().split("\n")[:-1]
+    bpe_merges = [tuple(merge.split()[:2]) for merge in bpe_merges]
+    outfile.write(struct.pack("i", len(bpe_merges)))
+    print("BPE merges size:", len(bpe_merges))
+    for merge in bpe_merges:
+        text = bytearray(" ".join(merge), "utf-8")
+        outfile.write(struct.pack("i", len(text)))
+        outfile.write(text)
+
+
 def parse_model(checkpoint, outfile, use_f16):
     for name in checkpoint.keys():
         var_data = checkpoint[name].squeeze().numpy()
@@ -99,6 +111,7 @@ if __name__ == "__main__":
 
     parse_hparams(dir_model, outfile, args.use_f16)
     parse_vocab(dir_model, outfile)
+    parse_bpe_merges(dir_model, outfile)
     parse_model(checkpoint, outfile, args.use_f16)
 
     outfile.close()
