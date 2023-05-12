@@ -1,5 +1,8 @@
 *.o
 biogpt
+mosestokenizer
 *.bin
 *.json
 *.pt
+
+data/
