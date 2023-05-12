@@ -1,3 +1,5 @@
+// Quick implementation extracted from https://github.com/alvations/sacremoses/blob/master/sacremoses/tokenize.py
+// This should serve as the first step of the tokenization process for BioGPT.
 #pragma once
 
 #include <algorithm>
