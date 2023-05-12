@@ -1,4 +1,6 @@
+#include "bpe.h"
 #include "ggml.h"
+#include "mosestokenizer.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -7,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <map>
 #include <string>
 #include <random>
@@ -20,11 +23,14 @@ struct biogpt_vocab {
     using id    = int32_t;
     using token = std::string;
 
-    int n_vocab = 42384;
+    int n_vocab  = 42384;
+    int n_merges = 40000;
 
     std::map<token, id> token_to_id;
     std::map<id, token> id_to_token;
     std::vector<std::string> special_tokens;
+
+    std::map<std::pair<std::string, std::string>, int> bpe_ranks;
 
     void add_special_token(const std::string &token);
 };
@@ -32,6 +38,7 @@ struct biogpt_vocab {
 // base params for BioGPT
 struct biogpt_hparams {
     int32_t n_vocab     = 42384;
+    int32_t n_merges    = 40000;
     int32_t d_ff        = 4096;
     int32_t d_model     = 1024;
     int32_t n_layer     = 24;
@@ -179,6 +186,49 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
                 vocab.id_to_token[i] = word;
             }
         }
+    }
+
+    // load merges
+    {
+        int32_t n_merges = 0;
+        read_safe(infile, n_merges);
+
+        if(n_merges != model.hparams.n_merges) {
+            fprintf(stderr, "%s: invalid model file '%s' (bad merge size %d != %d)\n",
+                    __func__, fname.c_str(), n_merges, model.hparams.n_merges);
+            return false;
+        }
+
+        std::string raw_merge;
+        std::pair<std::string, std::string> merge_pair;
+        std::vector<char> buf;
+
+        buf.reserve(128);
+
+        for(int i = 0; i < n_merges; i++) {
+            uint32_t len;
+            read_safe(infile, len);
+
+            if (len > 0) {
+                buf.resize(len);
+                infile.read(&buf[0], buf.size());
+                raw_merge.assign(&buf[0], buf.size());
+
+                // resplit "raw merge" -> ("raw", "merge")
+                std::stringstream ss(raw_merge);
+                std::string str1, str2;
+                ss >> str1 >> str2;
+
+                merge_pair.first  = str1;
+                merge_pair.second = str2;
+            } else {
+                raw_merge = "";
+            }
+
+            vocab.bpe_ranks[merge_pair] = i;
+        }
+
+        vocab.n_merges = model.hparams.n_merges;
     }
 
     const ggml_type wtype = model.hparams.f16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
@@ -616,68 +666,27 @@ void biogpt_vocab::add_special_token(const std::string &token) {
 }
 
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
-std::vector<biogpt_vocab::id> gpt_tokenize(const biogpt_vocab & vocab, const std::string & text) {
-    std::vector<std::string> words;
+std::vector<biogpt_vocab::id> gpt_tokenize(
+    biogpt_vocab & vocab,
+    const std::string  & text,
+    const std::string  & lang
+) {
+    // Moses tokenization
+    std::vector<std::string> words = moses_tokenize(text, lang);
 
-    // first split the text into words
-    {
-        std::string str = text;
-        std::string pat = R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
-
-        // Generate the subpattern from the special_tokens vector if it's not empty
-        if (!vocab.special_tokens.empty()) {
-            std::string special_tokens_subpattern;
-            for (const auto &token : vocab.special_tokens) {
-                if (!special_tokens_subpattern.empty()) {
-                    special_tokens_subpattern += "|";
-                }
-                special_tokens_subpattern += token;
-            }
-
-            // Modify the regex pattern with the generated special tokens subpattern
-            pat = special_tokens_subpattern + "|" + pat;
-        }
-
-        std::regex re(pat);
-        std::smatch m;
-
-        while (std::regex_search(str, m, re)) {
-            for (auto x : m) {
-                words.push_back(x);
-            }
-            str = m.suffix();
-        }
-    }
-
-    // find the longest tokens that form the words:
+    // byte-pair encoding and map to vocabulary
     std::vector<biogpt_vocab::id> tokens;
+    tokens.push_back(2);  // </s> to start the sequence.
     for (const auto & word : words) {
-        if (word.size() == 0) continue;
+        std::string bpe_word = bpe(word, vocab.bpe_ranks);
 
-        int i = 0;
-        int n = word.size();
-        while (i < n) {
-            int j = n;
-            while (j > i) {
-                auto it = vocab.token_to_id.find(word.substr(i, j-i));
-                if (it != vocab.token_to_id.end()) {
-                    tokens.push_back(it->second);
-                    i = j;
-                    break;
-                }
-                --j;
-            }
-            if (i == n) {
-                break;
-            }
-            if (j == i) {
-                auto sub = word.substr(i, 1);
-                if (vocab.token_to_id.find(sub) != vocab.token_to_id.end()) {
-                    tokens.push_back(vocab.token_to_id.at(sub));
-                } else {
-                    fprintf(stderr, "%s: unknown token '%s'\n", __func__, sub.data());
-                }
-                ++i;
+        std::stringstream ss(bpe_word);
+        std::string bpe_token;
+        while (ss >> bpe_token) {
+            if (vocab.token_to_id.find(bpe_token) != vocab.token_to_id.end()) {
+                tokens.push_back(vocab.token_to_id.at(bpe_token));
+            } else {
+                fprintf(stderr, "%s: unknown token '%s'\n", __func__, bpe_token.data());
             }
         }
     }
@@ -802,12 +811,18 @@ int main(int argc, char **argv) {
     std::vector<float> logits;
 
     // tokenize the prompt
-    std::vector<biogpt_vocab::id> embed_inp = ::gpt_tokenize(vocab, params.prompt);
+    params.prompt = "HER2 is a protein. It is a trans-membrane receptor.";
+    std::vector<biogpt_vocab::id> embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
+    // std::vector<biogpt_vocab::id> embed_inp = { 2, 6693, 21 };
 
     params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
 
-    printf("%s: number of tokens in prompt = %zu\n", __func__, embed_inp.size());
-    printf("\n");
+    printf("%s: prompt: '%s'\n", __func__, params.prompt.c_str());
+    printf("%s: number of tokens in prompt = %zu, first 8 tokens: ", __func__, embed_inp.size());
+    for (int i = 0; i < std::min(8, (int) embed_inp.size()); i++) {
+        printf("%d ", embed_inp[i]);
+    }
+    printf("\n\n");
 
     std::vector<biogpt_vocab::id> embed;
 

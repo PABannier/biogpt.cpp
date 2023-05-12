@@ -11,6 +11,8 @@ bool biogpt_params_parse(int argc, char ** argv, biogpt_params & params) {
             params.n_threads = std::stoi(argv[++i]);
         } else if (arg == "-p" || arg == "--prompt") {
             params.prompt = argv[++i];
+        } else if (arg == "-l" || arg == "--lang") {
+            params.prompt = argv[++i];
         } else if (arg == "-n" || arg == "--n_predict") {
             params.n_predict = std::stoi(argv[++i]);
         } else if (arg == "--top_k") {
@@ -45,6 +47,7 @@ void biogpt_print_usage(int argc, char ** argv, const biogpt_params & params) {
     fprintf(stderr, "  -t N, --threads N     number of threads to use during computation (default: %d)\n", params.n_threads);
     fprintf(stderr, "  -p PROMPT, --prompt PROMPT\n");
     fprintf(stderr, "                        prompt to start generation with (default: random)\n");
+    fprintf(stderr, "  -l LANG               language of the prompt          (default: %s)\n", params.lang.c_str());
     fprintf(stderr, "  -n N, --n_predict N   number of tokens to predict (default: %d)\n", params.n_predict);
     fprintf(stderr, "  --top_k N             top-k sampling (default: %d)\n", params.top_k);
     fprintf(stderr, "  --top_p N             top-p sampling (default: %.1f)\n", params.top_p);
