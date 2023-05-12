@@ -4,5 +4,6 @@ mosestokenizer
 *.bin
 *.json
 *.pt
+*.txt
 
 data/
