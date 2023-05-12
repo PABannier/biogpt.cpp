@@ -904,17 +904,12 @@ int main(int argc, char **argv) {
             i += embed.size() - 1;
         }
 
-        // display text
-        // for (auto id : embed) {
-        //     std::string decoded_word = gpt_decode(vocab.id_to_token[id]);
-        //     printf("%s", decoded_word.c_str());
-        // }
         std::vector<std::string> tokens;
         for (auto id : embed) {
             tokens.push_back(vocab.id_to_token[id]);
         }
         std::string decoded_word = gpt_decode(tokens, params.lang);
-        printf("%s", decoded_word.c_str());
+        printf("%s ", decoded_word.c_str());
         fflush(stdout);
 
         // end of text token
