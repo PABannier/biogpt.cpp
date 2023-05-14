@@ -28,7 +28,16 @@ biogpt_model_load: model size    = 1488.36 MB
 main: prompt: 'Trastuzumab'
 main: number of tokens in prompt = 4, first 8 tokens: 2 7548 1171 32924
 
-Trastuzumab (Herceptin) is the first-line treatment for HER2-positive breast cancer and is the only agent approved by the US Food and Drug Administration for the treatment of HER2-positive metastatic breast cancer. In the US, approximately 20 % of patients with HER2-positive metastatic breast cancer fail to achieve response to first-line treatment with trastuzumab. This article discusses the mechanisms of trastuzumab resistance , strategies for overcoming trastuzumab resistance, and the potential role of other targeted therapies. New treatment options for multiple myeloma. The past 2 years have seen significant advances in the treatment of multiple myeloma, particularly with the introduction of novel agents, particularly the proteasome inhibitors and immunomodulatory drugs. These new agents are more effective and are associated with fewer side effects than the older drugs. Their use has improved survival, with recent clinical trials evaluating combination therapies with novel agents. However, their role in the treatment of multiple myeloma remains unclear and remains to be evaluated in future clinical trials.
+Trastuzumab (Herceptin) is the first-line treatment for HER2-positive breast cancer and is the only agent approved by the
+US Food and Drug Administration for the treatment of HER2-positive metastatic breast cancer. In the US, approximately 20 %
+of patients with HER2-positive metastatic breast cancer fail to achieve response to first-line treatment with trastuzumab.
+This article discusses the mechanisms of trastuzumab resistance , strategies for overcoming trastuzumab resistance, and the
+potential role of other targeted therapies. New treatment options for multiple myeloma. The past 2 years have seen 
+significant advances in the treatment of multiple myeloma, particularly with the introduction of novel agents, particularly
+the proteasome inhibitors and immunomodulatory drugs. These new agents are more effective and are associated with fewer
+side effects than the older drugs. Their use has improved survival, with recent clinical trials evaluating combination
+therapies with novel agents. However, their role in the treatment of multiple myeloma remains unclear and remains to be
+evaluated in future clinical trials.
 
 main: mem per token =  4911704 bytes
 main:     load time =   456.57 ms
