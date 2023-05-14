@@ -4,8 +4,8 @@ Inference of BioGPT model in pure C/C++.
 
 ## Description
 
-The main goal of `biogpt.cpp` is to run the (BioGPT)[https://arxiv.org/abs/2210.10341] model using 4-bit quantization on a MacBook.
-This is achieved using the (ggml)[https://github.com/ggerganov/ggml] library used in (llama.cpp)[https://github.com/ggerganov/llama.cpp] or (whisper.cpp)[https://github.com/ggerganov/whisper.cpp].
+The main goal of `biogpt.cpp` is to run the [BioGPT](https://arxiv.org/abs/2210.10341) model using 4-bit quantization on a MacBook.
+This is achieved using the [ggml](https://github.com/ggerganov/ggml) library used in [llama.cpp](https://github.com/ggerganov/llama.cpp) or [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
 
 ---
 
