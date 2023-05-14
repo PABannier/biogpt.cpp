@@ -847,7 +847,6 @@ int main(int argc, char **argv) {
     std::vector<float> logits;
 
     // tokenize the prompt
-    params.prompt = "HER2 is a protein. It is a trans-membrane receptor.";
     std::vector<biogpt_vocab::id> embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
 
     params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
