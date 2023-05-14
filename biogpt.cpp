@@ -517,12 +517,20 @@ bool biogpt_eval(
     struct ggml_tensor * embd = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
     memcpy(embd->data, embed_inp.data(), N*ggml_element_size(embd));
 
+    // token embeddings
+    struct ggml_tensor * embed_tokens = ggml_get_rows(ctx0, model.embed_tokens, embd);
+    embed_tokens = ggml_scale(ctx0, embed_tokens, ggml_new_f32(ctx0, sqrt(float(d_model))));
+
+    // position embeddings
     struct ggml_tensor * positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
     for (int i = 0; i < N; ++i) {
-        ((int32_t *) positions->data)[i] = n_past + i;
+        // +2 since BioGPT offsets the embedding ids by 2. specific to biogpt.
+        ((int32_t *) positions->data)[i] = n_past + i + 2;
     }
+    struct ggml_tensor * embed_positions = ggml_get_rows(ctx0, model.embed_pos, positions);
 
-    struct ggml_tensor *inpL = ggml_add(ctx0, ggml_get_rows(ctx0, model.embed_pos, positions), ggml_get_rows(ctx0, model.embed_tokens, embd));
+    // token embeddings + position embeddings
+    struct ggml_tensor *inpL = ggml_add(ctx0, embed_tokens, embed_positions);
 
     for (int layer_ix = 0; layer_ix < n_layer; ++layer_ix) {
         struct ggml_tensor * current;
@@ -544,6 +552,9 @@ bool biogpt_eval(
             struct ggml_tensor * q_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].q_proj_w, current);
             q_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].q_proj_b, q_curr), q_curr);
             q_curr = ggml_reshape_3d(ctx0, q_curr, d_kv, n_head, N);
+
+            // biogpt scales the query
+            q_curr = ggml_scale(ctx0, q_curr, ggml_new_f32(ctx0, 1.0f/sqrt(float(d_kv))));
 
             struct ggml_tensor * k_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].k_proj_w, current);
             k_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].k_proj_b, k_curr), k_curr);
@@ -576,14 +587,8 @@ bool biogpt_eval(
             // (N + n_past, N, n_head)
             struct ggml_tensor * QK = ggml_mul_mat(ctx0, K, Q);
 
-            // scale by head_dim
-            struct ggml_tensor * QK_scaled = ggml_scale(ctx0, QK, ggml_new_f32(ctx0, 1.0f/sqrt(float(d_kv))));
-
-            // mask forward context
-            struct ggml_tensor * QK_masked = ggml_diag_mask_inf(ctx0, QK_scaled, n_past);
-
             // softmax
-            struct ggml_tensor * attn_weights = ggml_soft_max(ctx0, QK_masked);
+            struct ggml_tensor * attn_weights = ggml_soft_max(ctx0, QK);
 
             // [N + n_past, d_kv, n_head]
             struct ggml_tensor * V_trans =
