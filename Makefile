@@ -30,7 +30,7 @@ endif
 
 # keep standard at C11 and C++11
 CFLAGS   = -I.              -O3 -std=c11   -fPIC
-CXXFLAGS = -I. -O3 -std=c++11 -fPIC -g
+CXXFLAGS = -I. -O3 -std=c++11 -fPIC
 LDFLAGS  =
 
 # warnings
@@ -137,26 +137,20 @@ $(info )
 # Build library
 #
 
-mosestokenizer.o: mosestokenizer.cpp mosestokenizer.h
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+.PHONY: all
+all: biogpt
 
-ggml.o: ggml.c ggml.h
+%.o: %.c
 	$(CC)  $(CFLAGS)   -c $< -o $@
 
-utils.o: utils.cpp utils.h
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-bpe.o: bpe.cpp bpe.h
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+%: %.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 biogpt.o: biogpt.cpp ggml.o utils.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
-
-bpe: bpe.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-mosestokenizer: mosestokenizer.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 biogpt: biogpt.o ggml.o utils.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
