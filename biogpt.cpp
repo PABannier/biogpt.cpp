@@ -1,3 +1,4 @@
+#include "biogpt-util.h"
 #include "bpe.h"
 #include "ggml.h"
 #include "mosestokenizer.h"
@@ -31,8 +32,6 @@ struct biogpt_vocab {
     std::vector<std::string> special_tokens;
 
     std::map<std::pair<std::string, std::string>, int> bpe_ranks;
-
-    void add_special_token(const std::string &token);
 };
 
 // base params for BioGPT
@@ -99,10 +98,6 @@ struct biogpt_model {
     int n_loaded;
 };
 
-template<typename T>
-static void read_safe(std::ifstream& infile, T& dest) {
-    infile.read((char*)& dest, sizeof(T));
-}
 
 static bool biogpt_model_load(const std::string& fname, biogpt_model& model, biogpt_vocab& vocab, uint8_t& verbosity) {
     fprintf(stderr, "%s: loading model from '%s'\n", __func__, fname.c_str());
@@ -672,10 +667,6 @@ bool biogpt_eval(
     ggml_free(ctx0);
 
     return true;
-}
-
-void biogpt_vocab::add_special_token(const std::string &token) {
-    special_tokens.push_back(token);
 }
 
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
