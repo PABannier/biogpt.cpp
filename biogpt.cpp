@@ -1,3 +1,5 @@
+#include "biogpt.h"
+
 #include "bpe.h"
 #include "ggml.h"
 #include "mosestokenizer.h"
@@ -6,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <mutex>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -45,6 +48,8 @@ struct biogpt_hparams {
     int32_t n_head      = 16;
     int32_t f16         = 1;
     int32_t n_positions = 1024;
+
+    enum biogpt_ftype ftype = BIOGPT_FTYPE_ALL_F32;
 };
 
 // BioGptDecoderLayer
@@ -451,7 +456,8 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
             infile.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
 
-            printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
+            // TODO: set verbosity params
+            // printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
             total_size += ggml_nbytes(tensor);
             model.n_loaded++;
         }
@@ -469,6 +475,168 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
     infile.close();
 
     return true;
+}
+
+//
+// quantization
+//
+
+static void biogpt_model_quantize_internal(
+    const std::string& fname_inp, 
+    const std::string& fname_out, 
+    enum biogpt_ftype ftype, 
+    int nthread) {
+    ggml_type quantized_type;
+    switch (ftype) {
+        case BIOGPT_FTYPE_MOSTLY_Q4_0: quantized_type = GGML_TYPE_Q4_0; break;
+        case BIOGPT_FTYPE_MOSTLY_Q8_0: quantized_type = GGML_TYPE_Q8_0; break;
+        case BIOGPT_FTYPE_MOSTLY_Q5_0: quantized_type = GGML_TYPE_Q5_0; break;
+        default: throw fprintf(stderr, "%s: invalid output file type %d\n", __func__, ftype);
+    }
+
+    if (nthread <= 0) {
+        nthread = std::thread::hardware_concurrency();
+    }
+
+    biogpt_model model;
+    biogpt_vocab vocab;
+
+    if (!biogpt_model_load(params.model, model, vocab)) {
+        throw fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
+    }
+
+    size_t total_size_org = 0;
+    size_t total_size_new = 0;
+    std::vector<int64_t> hist_all(1 << 4, 0);
+
+    std::vector<std::thread> workers;
+    std::mutex mutex;
+
+    size_t idx = 0;
+    for (auto & t_info : model.tensors) {
+        std::string name = t_info.first;
+        struct ggml_tensor * tensor = t_info.second;
+        size_t nelements = tensor->ne[0]*tensor->ne[1];
+        size_t tensor_size = nelements*ggml_type_size(tensor->type)/ggml_blck_size(tensor->type);
+
+        std::vector<uint8_t> buffer;
+        buffer.resize(tensor_size);
+
+        fprintf(stderr, "%s: [%4zu/%4zu] %36s - [%5d, %5d], type = %6s, ",
+                __func__, ++idx, model.tensors.size(), name.c_str(), 
+                tensor->ne[0], tensor->ne[1],
+                ggml_type_name(tensor->type));
+
+        bool is_quantized = (name.find("weight") != std::string::npos) && (tensor->ne[1] != 1);
+
+        enum ggml_type new_type;
+        void * new_data;
+        size_t new_size;
+        std::vector<uint8_t> work;
+
+        if (!is_quantized) {
+            new_type = tensor->type;
+            new_data = tensor->data;
+            new_size = tensor_size;
+            fprintf(stderr, "%s: size = %8.3f MB\n", tensor_size/1024.0/1024.0);
+        } else {
+            new_type = quantized_type;
+            float* f32_data;
+            std::vector<uint8_t> f32_conv_buf;
+            if (tensor->type == GGML_TYPE_F32) {
+                f32_data = (float *) tensor->data;
+            } else if (tensor->type == GGML_TYPE_F16) {
+                f32_conv_buf.resize(nelements * sizeof(float));
+                f32_data = (float *) &f32_conv_buf;
+                const auto * f16_data = (const ggml_fp16_t *) tensor->data;
+                for (size_t i = 0; i < nelements; i++) {
+                    f32_data[i] = ggml_fp16_to_fp32(f16_data[i]);
+                }
+            } else {
+                throw fprintf(stderr, "%s: type %s unsupported for integer quantization", __func__, ggml_type_name(tensor->type));
+            }
+
+            fprintf(stderr, "quantizing ... ");
+            fflush(stdout);
+
+            work.resize(nelements * 4);  // upper bound on size
+            new_data = &work;
+            std::vector<int64_t> hist_cur(1 << 4, 0);
+
+            int chunk_size = 32 * 512;
+            const int nchunk = (nelements + chunk_size - 1)/chunk_size;
+            const int nthread_use = nthread > 1 ? std::max(1, std::min(nthread, nchunk)) : 1;
+            if (nthread_use < 2) {
+                new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, nelements, hist_cur.data());
+            } else {
+                size_t counter = 0;
+                new_size = 0;
+
+                auto compute = [&mutex, &counter, &hist_cur, &new_size, new_type, f32_data, new_data, nelements, chunk_size] () {
+                    std::vector<int64_t> local_hist;
+                    size_t local_size = 0;
+                    while (true) {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        size_t first = counter; counter += chunk_size;
+                        if (first >= nelements) {
+                            if (!local_hist.empty()) {
+                                for (int j=0; j<int(local_hist.size()); ++j) {
+                                    hist_cur[j] += local_hist[j];
+                                }
+                                new_size += local_size;
+                            }
+                            break;
+                        }
+                        lock.unlock();
+                        size_t last = std::min(nelements, first + chunk_size);
+                        if (local_hist.empty()) {
+                            local_hist.resize(hist_cur.size(), 0);
+                        }
+                        local_size += ggml_quantize_chunk(new_type, f32_data, new_data, first, last - first, local_hist.data());
+                    }
+                };
+                if ((int) workers.size() < nthread_use - 1) {
+                    workers.resize(nthread_use - 1);
+                }
+                for (int it = 0; it < nthread_use - 1; it++) {
+                    workers[it] = std::thread(compute);
+                }
+                compute();
+                for (int it = 0; it < nthread_use - 1; it++) {
+                    workers[it].join();
+                }
+            }
+
+            fprintf(stderr, "%s: size = %8.2f MB -> %8.2f MB | hist: ", __func__, tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
+            for (size_t i = 0; i < hist_cur.size(); i++) {
+                hist_all[i] += hist_cur[i];
+            }
+
+            for (size_t i = 0; i < hist_cur.size(); i++) {
+                fprintf(stderr, "%s: %5.3f ", __func__, hist_cur[i] / float(nelements));
+            }
+            printf("\n");
+        }
+        total_size_org += tensor_size;
+        total_size_new += new_size;
+        // TODO: write tensors in buffer or save it? FILE STREAM?
+    }
+
+    fprintf(stderr, "%s: model size = %8.2f MB\n", __func__, total_size_org/1024.0/1024.0);
+    fprintf(stderr, "%s: quant size = %8.2f MB\n", __func__, total_size_new/1024.0/1024.0);
+
+    {
+        int64_t sum_all = 0;
+        for (size_t i = 0; i < hist_all.size(); i++) {
+            sum_all += hist_all[i];
+        }
+
+        fprintf(stderr, "%s: hist: ", __func__);
+        for (size_t i = 0; i < hist_all.size(); i++) {
+             printf("%5.3f ", hist_all[i] / float(sum_all));
+        }
+        printf("\n");
+    }
 }
 
 bool biogpt_eval(
