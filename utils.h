@@ -14,6 +14,8 @@ struct biogpt_params {
     float   top_p = 0.9f;
     float   temp  = 0.9f;
 
+    uint8_t verbosity = 0;  // verbosity level
+
     int32_t n_batch = 8; // batch size for prompt processing
 
     std::string model = "./ggml_weights/ggml-model.bin"; // model path
