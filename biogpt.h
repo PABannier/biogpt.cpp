@@ -17,7 +17,7 @@ struct biogpt_hparams {
     int32_t f16         = 1;
     int32_t n_positions = 1024;
 
-    enum biogpt_ftype ftype = BIOGPT_FTYPE_ALL_F32;
+    int32_t ftype       = 0;
 };
 
 struct biogpt_vocab {
@@ -104,16 +104,15 @@ struct biogpt_params {
 };
 
 bool biogpt_model_load(
-        const std::string& fname, 
-        biogpt_model& model, 
-        biogpt_vocab& vocab, 
+        const std::string& fname,
+        biogpt_model& model,
+        biogpt_vocab& vocab,
         const uint8_t verbosity);
 
 void biogpt_model_quantize_internal(
-        biogpt_model& model,
-        biogpt_file& file,
-        ggml_type quantized_type,
-        int nthread);
+        std::ifstream & fin,
+        std::ofstream & fout,
+        const ggml_ftype ftype);
 
 bool biogpt_eval(
         const biogpt_model& model,

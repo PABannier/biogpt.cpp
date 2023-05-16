@@ -29,8 +29,8 @@ endif
 #
 
 # keep standard at C11 and C++11
-CFLAGS   = -I.              -O3 -std=c11   -fPIC
-CXXFLAGS = -I. -O3 -std=c++11 -fPIC
+CFLAGS   = -I.             -std=c11   -fPIC -g
+CXXFLAGS = -I. -std=c++11 -fPIC -g
 LDFLAGS  =
 
 # warnings

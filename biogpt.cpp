@@ -401,126 +401,160 @@ bool biogpt_model_load(
 // quantization
 //
 
-void biogpt_model_quantize_internal(
-    biogpt_model& model,
-    biogpt_file& file,
-    ggml_type quantized_type,
-    int nthread) {
+void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, const ggml_ftype ftype) {
+    ggml_type qtype = GGML_TYPE_F32;
+
+    switch (ftype) {
+        case GGML_FTYPE_MOSTLY_Q4_0: qtype = GGML_TYPE_Q4_0; break;
+        case GGML_FTYPE_MOSTLY_Q4_1: qtype = GGML_TYPE_Q4_1; break;
+        case GGML_FTYPE_MOSTLY_Q4_2: qtype = GGML_TYPE_Q4_2; break;
+        case GGML_FTYPE_MOSTLY_Q5_0: qtype = GGML_TYPE_Q5_0; break;
+        case GGML_FTYPE_MOSTLY_Q5_1: qtype = GGML_TYPE_Q5_1; break;
+        case GGML_FTYPE_MOSTLY_Q8_0: qtype = GGML_TYPE_Q8_0; break;
+        case GGML_FTYPE_UNKNOWN:
+        case GGML_FTYPE_ALL_F32:
+        case GGML_FTYPE_MOSTLY_F16:
+        case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16:
+                {
+                    throw fprintf(stderr, "%s: invalid model type %d\n", __func__, ftype);
+                }
+    };
+
+    if (!ggml_is_quantized(qtype)) {
+        throw fprintf(stderr, "%s: invalid quantization type %d (%s)\n", __func__, qtype, ggml_type_name(qtype));
+    }
 
     size_t total_size_org = 0;
     size_t total_size_new = 0;
-    std::vector<int64_t> hist_all(1 << 4, 0);
 
-    size_t idx = 0;
-    for (auto & t_info : model.tensors) {
-        std::string name = t_info.first;
-        struct ggml_tensor * tensor = t_info.second;
-        size_t nelements = tensor->ne[0]*tensor->ne[1];
-        size_t tensor_size = nelements*ggml_type_size(tensor->type)/ggml_blck_size(tensor->type);
+    std::vector<float> work;
 
-        std::vector<uint8_t> buffer;
-        buffer.resize(tensor_size);
+    std::vector<uint8_t>     data_u8;
+    std::vector<ggml_fp16_t> data_f16;
+    std::vector<float>       data_f32;
 
-        fprintf(stderr, "%s: [%4zu/%4zu] %36s - [%lld, %lld], type = %6s, ",
-                __func__, ++idx, model.tensors.size(), name.c_str(),
-                tensor->ne[0], tensor->ne[1],
-                ggml_type_name(tensor->type));
+    while (true) {
+        int32_t n_dims;
+        int32_t length;
+        int32_t ttype; 
 
-        bool is_quantized = (name.find("weight") != std::string::npos) && (tensor->ne[1] != 1);
+        read_safe(fin, n_dims);
+        read_safe(fin, length);
+        read_safe(fin, ttype);
 
-        enum ggml_type new_type;
-        void * new_data;
-        size_t new_size;
-        std::vector<uint8_t> work;
+        if (fin.eof()) {
+            break;
+        }
 
-        if (!is_quantized) {
-            new_type = tensor->type;
-            new_data = tensor->data;
-            new_size = tensor_size;
-            fprintf(stderr, "%s: size = %8.3f MB\n", __func__, tensor_size/1024.0/1024.0);
-        } else {
-            float * f32_data;
-            new_type = quantized_type;
-            std::vector<uint8_t> f32_conv_buf;
-            if (tensor->type == GGML_TYPE_F32) {
-                f32_data = (float *) tensor->data;
-            } else if (tensor->type == GGML_TYPE_F16) {
-                f32_conv_buf.resize(nelements * sizeof(float));
-                f32_data = (float *) &f32_conv_buf;
-                const auto * f16_data = (const ggml_fp16_t *) tensor->data;
-                for (size_t i = 0; i < nelements; i++) {
-                    f32_data[i] = ggml_fp16_to_fp32(f16_data[i]);
+        int32_t nelements = 1;
+        int32_t ne[2] = {1, 1};
+        for (int i = 0; i < n_dims; i++) {
+            read_safe(fin, ne[i]);
+            nelements *= ne[i];
+        }
+
+        std::string name;
+        std::vector<char> buf(length);
+        fin.read(&buf[0], buf.size());
+        name.assign(&buf[0], buf.size());
+
+        printf("%64s - [%5d, %5d], type = %6s ", name.data(), ne[0], ne[1], ggml_type_name((ggml_type) ttype));
+
+        bool quantize = (name.find("weight") != std::string::npos) && (ne[1] != 1);
+
+        if (quantize) {
+            if (ttype != GGML_TYPE_F32 && ttype != GGML_TYPE_F16) {
+                throw fprintf(stderr, "%s: unsupported ttype %d (%s) for integer quantization\n", __func__, ttype, ggml_type_name((ggml_type) ttype));
+            }
+
+            if (ttype == GGML_TYPE_F16) {
+                data_f16.resize(nelements);
+                fin.read(reinterpret_cast<char *>(data_f16.data()), nelements * sizeof(ggml_fp16_t));
+                data_f32.resize(nelements);
+                for (int i = 0; i < nelements; ++i) {
+                    data_f32[i] = ggml_fp16_to_fp32(data_f16[i]);
                 }
             } else {
-                throw fprintf(stderr, "%s: type %s unsupported for integer quantization", __func__, ggml_type_name(tensor->type));
+                data_f32.resize(nelements);
+                fin.read(reinterpret_cast<char *>(data_f32.data()), nelements * sizeof(float));
             }
 
-            fprintf(stderr, "quantizing ... \n");
-            fflush(stdout);
+            ttype = qtype;
+        } else {
+            const int bpe = (ttype == 0) ? sizeof(float) : sizeof(uint16_t);
+            data_u8.resize(nelements*bpe);
+            fin.read(reinterpret_cast<char *>(data_u8.data()), nelements*bpe);
+        }
 
-            work.resize(nelements);
+        write_safe(fout, n_dims);
+        write_safe(fout, length);
+        write_safe(fout, ttype);
+
+        for (int i = 0; i < n_dims; i++) {
+            write_safe(fout, ne[i]);
+        }
+
+        fout.write(&name[0], length);
+
+        if (quantize) {
+            work.resize(nelements);  // for quantization
+
+            size_t cur_size = 0;
             std::vector<int64_t> hist_cur(1 << 4, 0);
 
-            switch ((ggml_type) new_type) {
+            switch ((ggml_type) ttype) {
                 case GGML_TYPE_Q4_0:
-                {
-                    new_size = ggml_quantize_q4_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
-                } break;
+                    {
+                        cur_size = ggml_quantize_q4_0(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
+                case GGML_TYPE_Q4_1:
+                    {
+                        cur_size = ggml_quantize_q4_1(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
+                case GGML_TYPE_Q4_2:
+                    {
+                        cur_size = ggml_quantize_q4_2(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
                 case GGML_TYPE_Q5_0:
-                {
-                    new_size = ggml_quantize_q5_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
-                } break;
+                    {
+                        cur_size = ggml_quantize_q5_0(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
+                case GGML_TYPE_Q5_1:
+                    {
+                        cur_size = ggml_quantize_q5_1(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
                 case GGML_TYPE_Q8_0:
-                {
-                    new_size = ggml_quantize_q8_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
-                } break;
-                default:
-                {
-                    fprintf(stderr, "%s: unsupported quantization type %d (%s)\n", __func__, new_type, ggml_type_name((ggml_type) new_type));
-                }
+                    {
+                        cur_size = ggml_quantize_q8_0(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
+                    } break;
+                case GGML_TYPE_F32:
+                case GGML_TYPE_F16:
+                case GGML_TYPE_I8:
+                case GGML_TYPE_I16:
+                case GGML_TYPE_I32:
+                case GGML_TYPE_Q8_1:
+                case GGML_TYPE_COUNT:
+                    {
+                        throw fprintf(stderr, "%s: unsupported quantization type %d (%s)\n", __func__, ttype, ggml_type_name((ggml_type) ttype));
+                    }
             }
 
-            fprintf(stderr, "%s: size = %8.2f MB -> %8.2f MB | hist: ", __func__, tensor_size/1024.0/1024.0, new_size/1024.0/1024.0);
-            for (size_t i = 0; i < hist_cur.size(); i++) {
-                hist_all[i] += hist_cur[i];
-            }
+            fout.write(reinterpret_cast<char *>(work.data()), cur_size);
+            total_size_new += cur_size;
 
-            for (size_t i = 0; i < hist_cur.size(); i++) {
-                fprintf(stderr, "%s: %5.3f ", __func__, hist_cur[i] / float(nelements));
-            }
+            printf("size = %8.2f MB -> %8.2f MB", nelements * sizeof(float)/1024.0/1024.0, cur_size/1024.0/1024.0);
             printf("\n");
+        } else {
+            printf("size = %8.3f MB\n", data_u8.size()/1024.0/1024.0);
+            fout.write(reinterpret_cast<char *>(data_u8.data()), data_u8.size());
+            total_size_new += data_u8.size();
         }
-        total_size_org += tensor_size;
-        total_size_new += new_size;
 
-        // metadata
-        file.write_u32(2);  // number of dimensions in tensor
-        file.write_u32((uint32_t) name.size());
-        file.write_u32(new_type);
-        file.write_raw(tensor->ne, 2*sizeof(tensor->ne[0]));
-        file.write_raw(name.data(), name.size());
-
-        // data
-        file.seek(-file.tell() & 31, SEEK_CUR);  // TODO what is it? alignment?
-        // BIOGPT_ASSERT(new_size == calc_tensor_size(tensor->ne, new_type));
-        file.write_raw(new_data, new_size);
+        total_size_org += nelements * sizeof(float);
     }
 
-    fprintf(stderr, "%s: model size = %8.2f MB\n", __func__, total_size_org/1024.0/1024.0);
-    fprintf(stderr, "%s: quant size = %8.2f MB\n", __func__, total_size_new/1024.0/1024.0);
-
-    {
-        int64_t sum_all = 0;
-        for (size_t i = 0; i < hist_all.size(); i++) {
-            sum_all += hist_all[i];
-        }
-
-        fprintf(stderr, "%s: hist: ", __func__);
-        for (size_t i = 0; i < hist_all.size(); i++) {
-             printf("%5.3f ", hist_all[i] / float(sum_all));
-        }
-        printf("\n");
-    }
+    printf("%s: model size  = %8.2f MB\n", __func__, total_size_org/1024.0/1024.0);
+    printf("%s: quant size  = %8.2f MB | ftype = %d (%s)\n", __func__, total_size_new/1024.0/1024.0, ftype, ggml_type_name(qtype));
 }
 
 bool biogpt_eval(
