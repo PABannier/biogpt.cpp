@@ -1,4 +1,5 @@
 #include "biogpt.h"
+#include "biogpt-util.h"
 
 #include "bpe.h"
 #include "ggml.h"
@@ -481,11 +482,14 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 // quantization
 //
 
-static void biogpt_model_quantize_internal(
-    const std::string& fname_inp, 
-    const std::string& fname_out, 
-    enum biogpt_ftype ftype, 
+static bool biogpt_model_quantize(
+    const std::string& fname_inp,
+    const std::string& fname_out,
+    enum biogpt_ftype ftype,
     int nthread) {
+
+    biogpt_file file(fname_inp.c_str(), "wb");
+    
     ggml_type quantized_type;
     switch (ftype) {
         case BIOGPT_FTYPE_MOSTLY_Q4_0: quantized_type = GGML_TYPE_Q4_0; break;
@@ -501,9 +505,31 @@ static void biogpt_model_quantize_internal(
     biogpt_model model;
     biogpt_vocab vocab;
 
-    if (!biogpt_model_load(params.model, model, vocab)) {
-        throw fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
+    if (!biogpt_model_load(fname_inp, model, vocab)) {
+        fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, fname_inp.c_str());
+        return 1;
     }
+
+    // TODO: write magic + metadata + vocab
+
+    try {
+        biogpt_model_quantize_internal(model, vocab, file, quantized_type, nthread);
+    } catch(const std::string& err) {
+        fprintf(stderr, "%s: failed to quantize: %s\n", __func__, err.c_str());
+        return 1;
+    }
+
+    file.close();
+    
+    return 0;
+}
+
+static void biogpt_model_quantize_internal(
+    biogpt_model& model,
+    biogpt_vocab& vocab,
+    biogpt_file& file,
+    ggml_type quantized_type, 
+    int nthread) {
 
     size_t total_size_org = 0;
     size_t total_size_new = 0;
@@ -619,7 +645,18 @@ static void biogpt_model_quantize_internal(
         }
         total_size_org += tensor_size;
         total_size_new += new_size;
-        // TODO: write tensors in buffer or save it? FILE STREAM?
+
+        // metadata
+        file.write_u32(2);  // number of dimensions in tensor
+        file.write_u32((uint32_t) name.size());
+        file.write_u32(new_type);
+        file.write_raw(tensor->ne, 2*sizeof(tensor->ne[0]));
+        file.write_raw(name.data(), name.size());
+
+        // data
+        file.seek(-file.tell() & 31, SEEK_CUR);  // TODO what is it? alignment?
+        // BIOGPT_ASSERT(new_size == calc_tensor_size(tensor->ne, new_type));
+        file.write_raw(new_data, new_size);
     }
 
     fprintf(stderr, "%s: model size = %8.2f MB\n", __func__, total_size_org/1024.0/1024.0);
