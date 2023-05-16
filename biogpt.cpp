@@ -118,7 +118,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
     {
         uint32_t magic;
         read_safe(infile, magic);
-        if (magic != 0x67676d6c) {
+        if (magic != BIOGPT_FILE_MAGIC) {
             fprintf(stderr, "%s: invalid model file '%s' (bad magic)\n", __func__, fname.c_str());
             return false;
         }
@@ -484,7 +484,7 @@ static bool biogpt_model_quantize(
     int nthread) {
 
     biogpt_file file(fname_inp.c_str(), "wb");
-    
+
     ggml_type quantized_type;
     switch (ftype) {
         case BIOGPT_FTYPE_MOSTLY_Q4_0: quantized_type = GGML_TYPE_Q4_0; break;
@@ -505,7 +505,44 @@ static bool biogpt_model_quantize(
         return 1;
     }
 
-    // TODO: write magic + metadata + vocab
+    const auto& hparams = model.hparams;
+
+    // write magic + hparams
+    {
+        file.write_u32(BIOGPT_FILE_MAGIC);
+        file.write_u32(hparams.n_vocab);
+        file.write_u32(hparams.n_layer);
+        file.write_u32(hparams.n_head);
+        file.write_u32(hparams.n_positions);
+        file.write_u32(hparams.d_ff);
+        file.write_u32(hparams.d_model);
+        file.write_u32(quantized_type);
+    }
+
+    // write vocab
+    {
+        uint32_t n_vocab = vocab.n_vocab;
+        file.write_u32((uint32_t) n_vocab);
+
+        for (uint32_t i = 0; i < n_vocab; i++) {
+            const auto & token = vocab.id_to_token.at(i);
+            file.write_u32((uint32_t) token.size());
+            file.write_raw(token.data(), token.size());
+        }
+    }
+
+    // write merges
+    {
+        uint32_t n_merges = vocab.n_merges;
+        file.write_u32((uint32_t) n_merges);
+
+        for (const auto& merge : vocab.bpe_ranks) {
+            word_pair pair = merge.first;
+            std::string joined_pair = pair.first + " " + pair.second;
+            file.write_u32((uint32_t) joined_pair.size());
+            file.write_raw(joined_pair.data(), joined_pair.size());
+        }
+    }
 
     try {
         biogpt_model_quantize_internal(model, vocab, file, quantized_type, nthread);
@@ -515,7 +552,7 @@ static bool biogpt_model_quantize(
     }
 
     file.close();
-    
+
     return 0;
 }
 
@@ -523,7 +560,7 @@ static void biogpt_model_quantize_internal(
     biogpt_model& model,
     biogpt_vocab& vocab,
     biogpt_file& file,
-    ggml_type quantized_type, 
+    ggml_type quantized_type,
     int nthread) {
 
     size_t total_size_org = 0;
@@ -544,7 +581,7 @@ static void biogpt_model_quantize_internal(
         buffer.resize(tensor_size);
 
         fprintf(stderr, "%s: [%4zu/%4zu] %36s - [%5d, %5d], type = %6s, ",
-                __func__, ++idx, model.tensors.size(), name.c_str(), 
+                __func__, ++idx, model.tensors.size(), name.c_str(),
                 tensor->ne[0], tensor->ne[1],
                 ggml_type_name(tensor->type));
 

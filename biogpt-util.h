@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <string>
 
-#define BIOGPT_FILE_MAGIC   'ggjt'
+#define BIOGPT_FILE_MAGIC   'ggml'
 #define BIOGPT_FILE_VERSION 1
 
 #define BIOGPT_ASSERT(x) \
