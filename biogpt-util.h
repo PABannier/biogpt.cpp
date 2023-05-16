@@ -16,6 +16,13 @@
         } \
     } while (0)
 
+using word_pair = std::pair<std::string, std::string>;
+
+template<typename T>
+static void read_safe(std::ifstream& infile, T& dest) {
+    infile.read((char*)& dest, sizeof(T));
+}
+
 template <typename T>
 static T checked_mul(T a, T b) {
     T ret = a * b;

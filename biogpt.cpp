@@ -31,7 +31,7 @@ struct biogpt_vocab {
     std::map<token, id> token_to_id;
     std::map<id, token> id_to_token;
 
-    std::map<std::pair<std::string, std::string>, int> bpe_ranks;
+    std::map<word_pair, int> bpe_ranks;
 };
 
 // base params for BioGPT
@@ -99,11 +99,6 @@ struct biogpt_model {
     std::map<std::string, struct ggml_tensor *> tensors;
     int n_loaded;
 };
-
-template<typename T>
-static void read_safe(std::ifstream& infile, T& dest) {
-    infile.read((char*)& dest, sizeof(T));
-}
 
 static bool biogpt_model_load(const std::string& fname, biogpt_model& model, biogpt_vocab& vocab) {
     fprintf(stderr, "%s: loading model from '%s'\n", __func__, fname.c_str());
@@ -201,7 +196,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
         }
 
         std::string raw_merge;
-        std::pair<std::string, std::string> merge_pair;
+        word_pair merge_pair;
         std::vector<char> buf;
 
         buf.reserve(128);
@@ -452,8 +447,7 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
             infile.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
 
-            // TODO: set verbosity params
-            // printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
+            printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
             total_size += ggml_nbytes(tensor);
             model.n_loaded++;
         }
@@ -476,85 +470,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 //
 // quantization
 //
-
-static bool biogpt_model_quantize(
-    const std::string& fname_inp,
-    const std::string& fname_out,
-    enum biogpt_ftype ftype,
-    int nthread) {
-
-    biogpt_file file(fname_inp.c_str(), "wb");
-
-    ggml_type quantized_type;
-    switch (ftype) {
-        case BIOGPT_FTYPE_MOSTLY_Q4_0: quantized_type = GGML_TYPE_Q4_0; break;
-        case BIOGPT_FTYPE_MOSTLY_Q8_0: quantized_type = GGML_TYPE_Q8_0; break;
-        case BIOGPT_FTYPE_MOSTLY_Q5_0: quantized_type = GGML_TYPE_Q5_0; break;
-        default: throw fprintf(stderr, "%s: invalid output file type %d\n", __func__, ftype);
-    }
-
-    if (nthread <= 0) {
-        nthread = std::thread::hardware_concurrency();
-    }
-
-    biogpt_model model;
-    biogpt_vocab vocab;
-
-    if (!biogpt_model_load(fname_inp, model, vocab)) {
-        fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, fname_inp.c_str());
-        return 1;
-    }
-
-    const auto& hparams = model.hparams;
-
-    // write magic + hparams
-    {
-        file.write_u32(BIOGPT_FILE_MAGIC);
-        file.write_u32(hparams.n_vocab);
-        file.write_u32(hparams.n_layer);
-        file.write_u32(hparams.n_head);
-        file.write_u32(hparams.n_positions);
-        file.write_u32(hparams.d_ff);
-        file.write_u32(hparams.d_model);
-        file.write_u32(quantized_type);
-    }
-
-    // write vocab
-    {
-        uint32_t n_vocab = vocab.n_vocab;
-        file.write_u32((uint32_t) n_vocab);
-
-        for (uint32_t i = 0; i < n_vocab; i++) {
-            const auto & token = vocab.id_to_token.at(i);
-            file.write_u32((uint32_t) token.size());
-            file.write_raw(token.data(), token.size());
-        }
-    }
-
-    // write merges
-    {
-        uint32_t n_merges = vocab.n_merges;
-        file.write_u32((uint32_t) n_merges);
-
-        for (const auto& merge : vocab.bpe_ranks) {
-            word_pair pair = merge.first;
-            std::string joined_pair = pair.first + " " + pair.second;
-            file.write_u32((uint32_t) joined_pair.size());
-            file.write_raw(joined_pair.data(), joined_pair.size());
-        }
-    }
-
-    try {
-        biogpt_model_quantize_internal(model, vocab, file, quantized_type, nthread);
-    } catch(const std::string& err) {
-        fprintf(stderr, "%s: failed to quantize: %s\n", __func__, err.c_str());
-        return 1;
-    }
-
-    file.close();
-
-    return 0;
-}
 
 static void biogpt_model_quantize_internal(
     biogpt_model& model,
