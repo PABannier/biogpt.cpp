@@ -30,11 +30,8 @@ struct biogpt_vocab {
 
     std::map<token, id> token_to_id;
     std::map<id, token> id_to_token;
-    std::vector<std::string> special_tokens;
 
     std::map<std::pair<std::string, std::string>, int> bpe_ranks;
-
-    void add_special_token(const std::string &token);
 };
 
 // base params for BioGPT
@@ -867,10 +864,6 @@ bool biogpt_eval(
     ggml_free(ctx0);
 
     return true;
-}
-
-void biogpt_vocab::add_special_token(const std::string &token) {
-    special_tokens.push_back(token);
 }
 
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
