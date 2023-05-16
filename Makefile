@@ -152,10 +152,10 @@ all: main
 biogpt.o: biogpt.cpp ggml.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
 
-quantize.o: quantize.cpp biogpt.o
+quantize.o: quantize.cpp biogpt.o 
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
 
-quantize: quantize.o biogpt.o
+quantize: quantize.o biogpt.o mosestokenizer.o bpe.o ggml.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 main.o: main.cpp biogpt.o
