@@ -155,5 +155,11 @@ biogpt.o: biogpt.cpp ggml.o utils.o mosestokenizer.o bpe.o
 biogpt: biogpt.o ggml.o utils.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
+quantize.o: quantize.cpp biogpt.o
+	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
+
+quantize: quantize.o biogpt.o
+	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
+
 clean:
 	rm -vf *.o biogpt mosestokenizer

@@ -1,8 +1,8 @@
 #include "biogpt-util.h"
+#include "biogpt.cpp"  // TODO: change to file header
 
 #include <string>
 #include <thread>
-
 
 static bool biogpt_model_quantize(
     const std::string& fname_inp,
@@ -10,7 +10,7 @@ static bool biogpt_model_quantize(
     enum biogpt_ftype ftype,
     int nthread) {
 
-    biogpt_file file(fname_inp.c_str(), "wb");
+    biogpt_file file(fname_out.c_str(), "wb");
 
     ggml_type quantized_type;
     switch (ftype) {
@@ -79,6 +79,40 @@ static bool biogpt_model_quantize(
     }
 
     file.close();
+
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    std::string fname_inp;
+    std::string fname_out;
+    biogpt_ftype ftype;
+    int n_thread;
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "-f" || arg == "--fname_in") {
+            fname_inp = argv[++i];
+        } else if (arg == "-o" || arg == "--fname_out") {
+            fname_out = argv[++i];
+        } else if (arg == "-t" || arg == "--ftype") {
+            try {
+                ftype = static_cast<biogpt_ftype>(std::stoi(argv[++i]));
+            } catch (const std::string & err) {
+                fprintf(stderr, "error castying file type: %s\n", err.c_str());
+            }
+        } else if (arg == "-n" || arg == "--n_thread") {
+            n_thread = std::stoi(argv[++i]);
+        } else {
+            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
+            exit(0);
+        }
+    }
+
+    biogpt_model_quantize(fname_inp, fname_out, ftype, n_thread);
+
+    printf("Done.");
 
     return 0;
 }
