@@ -1,5 +1,5 @@
 #include "biogpt-util.h"
-#include "biogpt.cpp"  // TODO: change to file header
+#include "biogpt.h"
 
 #include <string>
 #include <thread>
@@ -84,8 +84,7 @@ static bool biogpt_model_quantize(
 }
 
 int main(int argc, char **argv) {
-    std::string fname_inp;
-    std::string fname_out;
+    std::string fname_inp, fname_out;
     biogpt_ftype ftype;
     int n_thread;
 

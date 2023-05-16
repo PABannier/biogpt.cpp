@@ -1,9 +1,8 @@
+#include "biogpt.h"
 #include "biogpt-util.h"
-
 #include "bpe.h"
 #include "ggml.h"
 #include "mosestokenizer.h"
-#include "utils.h"
 
 #include <algorithm>
 #include <cassert>
@@ -19,88 +18,7 @@
 #include <regex>
 #include <vector>
 
-static const size_t MB = 4*1024*1024;
-
-struct biogpt_vocab {
-    using id    = int32_t;
-    using token = std::string;
-
-    int n_vocab  = 42384;
-    int n_merges = 40000;
-
-    std::map<token, id> token_to_id;
-    std::map<id, token> id_to_token;
-
-    std::map<word_pair, int> bpe_ranks;
-};
-
-// base params for BioGPT
-struct biogpt_hparams {
-    int32_t n_vocab     = 42384;
-    int32_t n_merges    = 40000;
-    int32_t d_ff        = 4096;
-    int32_t d_model     = 1024;
-    int32_t n_layer     = 24;
-    int32_t n_head      = 16;
-    int32_t f16         = 1;
-    int32_t n_positions = 1024;
-
-    enum biogpt_ftype ftype = BIOGPT_FTYPE_ALL_F32;
-};
-
-// BioGptDecoderLayer
-struct biogpt_layer_decoder {
-    // BioGptAttention
-    struct ggml_tensor * q_proj_w;
-    struct ggml_tensor * k_proj_w;
-    struct ggml_tensor * v_proj_w;
-    struct ggml_tensor * o_proj_w;
-
-    struct ggml_tensor * q_proj_b;
-    struct ggml_tensor * k_proj_b;
-    struct ggml_tensor * v_proj_b;
-    struct ggml_tensor * o_proj_b;
-
-    // LayerNorm
-    struct ggml_tensor * ln_0_w;
-    struct ggml_tensor * ln_1_w;
-    struct ggml_tensor * ln_0_b;
-    struct ggml_tensor * ln_1_b;
-
-    // FF
-    struct ggml_tensor * fc_0_w;
-    struct ggml_tensor * fc_0_b;
-    struct ggml_tensor * fc_1_w;
-    struct ggml_tensor * fc_1_b;
-
-};
-
-struct biogpt_model {
-    biogpt_hparams hparams;
-
-    struct ggml_tensor * embed_tokens;  // token embeddings
-    struct ggml_tensor * embed_pos;  // position embeddings
-
-    // final layer norm
-    struct ggml_tensor * ln_w;
-    struct ggml_tensor * ln_b;
-
-    // lm head
-    struct ggml_tensor * lm_head;
-
-    // key + value memory
-    struct ggml_tensor * memory_k;
-    struct ggml_tensor * memory_v;
-
-    std::vector<biogpt_layer_decoder> layers_decoder;
-
-    // context
-    struct ggml_context * ctx;
-    std::map<std::string, struct ggml_tensor *> tensors;
-    int n_loaded;
-};
-
-static bool biogpt_model_load(
+bool biogpt_model_load(
         const std::string& fname, 
         biogpt_model& model, 
         biogpt_vocab& vocab, 
@@ -483,7 +401,7 @@ static bool biogpt_model_load(
 // quantization
 //
 
-static void biogpt_model_quantize_internal(
+void biogpt_model_quantize_internal(
     biogpt_model& model,
     biogpt_file& file,
     ggml_type quantized_type,
@@ -963,136 +881,62 @@ biogpt_vocab::id biogpt_sample_top_k_top_p(
     return logits_id[idx].second;
 }
 
-int main(int argc, char **argv) {
-    const int64_t t_main_start_us = ggml_time_us();
+bool biogpt_params_parse(int argc, char ** argv, biogpt_params & params) {
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
 
-    biogpt_params params;
-
-    if (biogpt_params_parse(argc, argv, params) == false) {
-        return 1;
-    }
-
-    if(params.seed < 0) {
-        params.seed = time(NULL);
-    }
-
-    printf("%s: seed = %d\n", __func__, params.seed);
-
-    std::mt19937 rng(params.seed);
-
-    int64_t t_load_us = 0;
-
-    biogpt_vocab vocab;
-    biogpt_model model;
-
-    // load the model
-    {
-        const int64_t t_start_us = ggml_time_us();
-
-        if(!biogpt_model_load(params.model, model, vocab, params.verbosity)) {
-            fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
-            return 1;
-        }
-
-        t_load_us = ggml_time_us() - t_start_us;
-    }
-
-    int n_past = 0;
-
-    int64_t t_sample_us  = 0;
-    int64_t t_predict_us = 0;
-
-    std::vector<float> logits;
-
-    // tokenize the prompt
-    std::vector<biogpt_vocab::id> embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
-
-    params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
-
-    printf("%s: prompt: '%s'\n", __func__, params.prompt.c_str());
-    printf("%s: number of tokens in prompt = %zu, first 8 tokens: ", __func__, embed_inp.size());
-    for (int i = 0; i < std::min(8, (int) embed_inp.size()); i++) {
-        printf("%d ", embed_inp[i]);
-    }
-    printf("\n\n");
-
-    std::vector<biogpt_vocab::id> embed;
-
-    // determine the required inference memory per token
-    size_t mem_per_token = 0;
-    biogpt_eval(model, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);
-
-    for (int i = embed.size(); i < (int) embed_inp.size() + params.n_predict; i++) {
-        // predict
-        if (embed.size() > 0) {
-            const int64_t t_start_us = ggml_time_us();
-
-            if(!biogpt_eval(model, params.n_threads, n_past, embed, logits, mem_per_token)) {
-                printf("Failed to predict\n");
-                return 1;
-            }
-
-            t_predict_us += ggml_time_us() - t_start_us;
-        }
-
-        n_past += embed.size();
-        embed.clear();
-
-        if (i >= (int) embed_inp.size()) {
-            // sample next token
-            const int   top_k = params.top_k;
-            const float top_p = params.top_p;
-            const float temp  = params.temp;
-
-            const int n_vocab = model.hparams.n_vocab;
-
-            biogpt_vocab::id id = 0;
-
-            // generation
-            {
-                const int64_t t_start_sample_us = ggml_time_us();
-                id = biogpt_sample_top_k_top_p(vocab, logits.data() + (logits.size() - n_vocab), top_k, top_p, temp, rng);
-                t_sample_us += ggml_time_us() - t_start_sample_us;
-            }
-
-            embed.push_back(id);
+        if (arg == "-s" || arg == "--seed") {
+            params.seed = std::stoi(argv[++i]);
+        } else if (arg == "-t" || arg == "--threads") {
+            params.n_threads = std::stoi(argv[++i]);
+        } else if (arg == "-p" || arg == "--prompt") {
+            params.prompt = argv[++i];
+        } else if (arg == "-l" || arg == "--lang") {
+            params.prompt = argv[++i];
+        } else if (arg == "-n" || arg == "--n_predict") {
+            params.n_predict = std::stoi(argv[++i]);
+        } else if (arg == "-v" || arg == "--verbosity") {
+            params.verbosity = std::stoi(argv[++i]);
+        } else if (arg == "--top_k") {
+            params.top_k = std::stoi(argv[++i]);
+        } else if (arg == "--top_p") {
+            params.top_p = std::stof(argv[++i]);
+        } else if (arg == "--temp") {
+            params.temp = std::stof(argv[++i]);
+        } else if (arg == "-b" || arg == "--batch_size") {
+            params.n_batch = std::stoi(argv[++i]);
+        } else if (arg == "-m" || arg == "--model") {
+            params.model = argv[++i];
+        } else if (arg == "-h" || arg == "--help") {
+            biogpt_print_usage(argv, params);
+            exit(0);
         } else {
-            for (int k = i; k < (int) embed_inp.size(); k++) {
-                embed.push_back(embed_inp[k]);
-                if ((int) embed.size() > params.n_batch) {
-                    break;
-                }
-            }
-            i += embed.size() - 1;
-        }
-
-        std::vector<std::string> tokens;
-        for (auto id : embed) {
-            tokens.push_back(vocab.id_to_token[id]);
-        }
-        std::string decoded_word = gpt_decode(tokens, params.lang);
-        printf("%s ", decoded_word.c_str());
-        fflush(stdout);
-
-        // end of text token
-        if (embed.back() == model.hparams.n_vocab) {
-            break;
+            fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
+            biogpt_print_usage(argv, params);
+            exit(0);
         }
     }
 
-    // report timing
-    {
-        const int64_t t_main_end_us = ggml_time_us();
+    return true;
+}
 
-        printf("\n\n");
-        printf("%s: mem per token = %8zu bytes\n", __func__, mem_per_token);
-        printf("%s:     load time = %8.2f ms\n", __func__, t_load_us/1000.0f);
-        printf("%s:   sample time = %8.2f ms\n", __func__, t_sample_us/1000.0f);
-        printf("%s:  predict time = %8.2f ms / %.2f ms per token\n", __func__, t_predict_us/1000.0f, t_predict_us/1000.0f/n_past);
-        printf("%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
-    }
-
-    ggml_free(model.ctx);
-
-    return 0;
+void biogpt_print_usage(char ** argv, const biogpt_params & params) {
+    fprintf(stderr, "usage: %s [options]\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "options:\n");
+    fprintf(stderr, "  -h, --help            show this help message and exit\n");
+    fprintf(stderr, "  -s SEED, --seed SEED  RNG seed (default: -1)\n");
+    fprintf(stderr, "  -t N, --threads N     number of threads to use during computation (default: %d)\n", params.n_threads);
+    fprintf(stderr, "  -p PROMPT, --prompt PROMPT\n");
+    fprintf(stderr, "                        prompt to start generation with (default: random)\n");
+    fprintf(stderr, "  -l LANG               language of the prompt          (default: %s)\n", params.lang.c_str());
+    fprintf(stderr, "  -n N, --n_predict N   number of tokens to predict (default: %d)\n", params.n_predict);
+    fprintf(stderr, "  -v V, --verbosity V   verbosity level (default: %d)\n", params.verbosity);
+    fprintf(stderr, "  --top_k N             top-k sampling  (default: %d)\n", params.top_k);
+    fprintf(stderr, "  --top_p N             top-p sampling  (default: %.1f)\n", params.top_p);
+    fprintf(stderr, "  --temp N              temperature     (default: %.1f)\n", params.temp);
+    fprintf(stderr, "  -b N, --batch_size N  batch size for prompt processing (default: %d)\n", params.n_batch);
+    fprintf(stderr, "  -m FNAME, --model FNAME\n");
+    fprintf(stderr, "                        model path (default: %s)\n", params.model.c_str());
+    fprintf(stderr, "\n");
 }
