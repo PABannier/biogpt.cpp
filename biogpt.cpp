@@ -100,7 +100,11 @@ struct biogpt_model {
     int n_loaded;
 };
 
-static bool biogpt_model_load(const std::string& fname, biogpt_model& model, biogpt_vocab& vocab) {
+static bool biogpt_model_load(
+        const std::string& fname, 
+        biogpt_model& model, 
+        biogpt_vocab& vocab, 
+        const uint8_t verbosity) {
     fprintf(stderr, "%s: loading model from '%s'\n", __func__, fname.c_str());
 
     auto infile = std::ifstream(fname, std::ios::binary);
@@ -275,7 +279,9 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
         ctx_size += 100ull*MB; // object overhead
 
-        fprintf(stderr, "%s: ggml ctx size = %7.2f MB\n", __func__, ctx_size/(1024.0*1024.0));
+        if (verbosity > 0) {
+            fprintf(stderr, "%s: ggml ctx size = %7.2f MB\n", __func__, ctx_size/(1024.0*1024.0));
+        }
     }
 
     // create the ggml context
@@ -388,7 +394,9 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
         const size_t memory_size = ggml_nbytes(model.memory_k) + ggml_nbytes(model.memory_v);
 
-        printf("%s: memory size = %8.2f MB, n_mem = %d\n", __func__, memory_size/1024.0/1024.0, n_mem);
+        if (verbosity > 0) {
+            printf("%s: memory size = %8.2f MB, n_mem = %d\n", __func__, memory_size/1024.0/1024.0, n_mem);
+        }
     }
 
     // load weights
@@ -447,12 +455,16 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
             infile.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
 
-            printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
+            if (verbosity > 0) {
+                printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
+            }
             total_size += ggml_nbytes(tensor);
             model.n_loaded++;
         }
 
-        fprintf(stderr, "%s: model size    = %7.2f MB\n", __func__, total_size/1024.0/1024.0);
+        if (verbosity > 0) {
+            fprintf(stderr, "%s: model size    = %7.2f MB\n", __func__, total_size/1024.0/1024.0);
+        }
 
         if (model.n_loaded == 0) {
             fprintf(stderr, "%s: WARN no tensors loaded from model file - assuming empty model for testing\n", __func__);
@@ -977,7 +989,7 @@ int main(int argc, char **argv) {
     {
         const int64_t t_start_us = ggml_time_us();
 
-        if(!biogpt_model_load(params.model, model, vocab)) {
+        if(!biogpt_model_load(params.model, model, vocab, params.verbosity)) {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
             return 1;
         }
