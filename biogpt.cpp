@@ -411,9 +411,6 @@ void biogpt_model_quantize_internal(
     size_t total_size_new = 0;
     std::vector<int64_t> hist_all(1 << 4, 0);
 
-    std::vector<std::thread> workers;
-    std::mutex mutex;
-
     size_t idx = 0;
     for (auto & t_info : model.tensors) {
         std::string name = t_info.first;
@@ -461,7 +458,7 @@ void biogpt_model_quantize_internal(
             fprintf(stderr, "quantizing ... \n");
             fflush(stdout);
 
-            work.resize(nelements);  
+            work.resize(nelements);
             std::vector<int64_t> hist_cur(1 << 4, 0);
 
             switch ((ggml_type) new_type) {
