@@ -1,4 +1,3 @@
-#include "biogpt.h"
 #include "biogpt-util.h"
 
 #include "bpe.h"
@@ -19,7 +18,6 @@
 #include <random>
 #include <regex>
 #include <vector>
-
 
 static const size_t MB = 4*1024*1024;
 
@@ -1009,7 +1007,6 @@ biogpt_vocab::id biogpt_sample_top_k_top_p(
     return logits_id[idx].second;
 }
 
-
 int main(int argc, char **argv) {
     const int64_t t_main_start_us = ggml_time_us();
 
@@ -1138,7 +1135,6 @@ int main(int argc, char **argv) {
         printf("%s:  predict time = %8.2f ms / %.2f ms per token\n", __func__, t_predict_us/1000.0f, t_predict_us/1000.0f/n_past);
         printf("%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
     }
-
 
     ggml_free(model.ctx);
 
