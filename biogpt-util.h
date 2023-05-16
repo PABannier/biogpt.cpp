@@ -4,6 +4,8 @@
 
 #include <cstdio>
 #include <string>
+#include <fstream>
+#include <vector>
 
 #define BIOGPT_FILE_MAGIC   'ggml'
 #define BIOGPT_FILE_VERSION 1
@@ -27,8 +29,8 @@ template <typename T>
 static T checked_mul(T a, T b) {
     T ret = a * b;
     if (a != 0 && ret / a != b) {
-        throw format("overflow multiplying %llu * %llu",
-                     (unsigned long long) a, (unsigned long long) b);
+        throw fprintf(stderr, "overflow multiplying %llu * %llu",
+                      (unsigned long long) a, (unsigned long long) b);
     }
     return ret;
 }

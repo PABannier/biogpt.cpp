@@ -72,7 +72,7 @@ static bool biogpt_model_quantize(
     }
 
     try {
-        biogpt_model_quantize_internal(model, vocab, file, quantized_type, nthread);
+        biogpt_model_quantize_internal(model, file, quantized_type, nthread);
     } catch(const std::string& err) {
         fprintf(stderr, "%s: failed to quantize: %s\n", __func__, err.c_str());
         return 1;

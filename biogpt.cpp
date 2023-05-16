@@ -473,7 +473,6 @@ static bool biogpt_model_load(const std::string& fname, biogpt_model& model, bio
 
 static void biogpt_model_quantize_internal(
     biogpt_model& model,
-    biogpt_vocab& vocab,
     biogpt_file& file,
     ggml_type quantized_type,
     int nthread) {
@@ -495,7 +494,7 @@ static void biogpt_model_quantize_internal(
         std::vector<uint8_t> buffer;
         buffer.resize(tensor_size);
 
-        fprintf(stderr, "%s: [%4zu/%4zu] %36s - [%5d, %5d], type = %6s, ",
+        fprintf(stderr, "%s: [%4zu/%4zu] %36s - [%lld, %lld], type = %6s, ",
                 __func__, ++idx, model.tensors.size(), name.c_str(),
                 tensor->ne[0], tensor->ne[1],
                 ggml_type_name(tensor->type));
@@ -511,7 +510,7 @@ static void biogpt_model_quantize_internal(
             new_type = tensor->type;
             new_data = tensor->data;
             new_size = tensor_size;
-            fprintf(stderr, "%s: size = %8.3f MB\n", tensor_size/1024.0/1024.0);
+            fprintf(stderr, "%s: size = %8.3f MB\n", __func__, tensor_size/1024.0/1024.0);
         } else {
             new_type = quantized_type;
             float* f32_data;
