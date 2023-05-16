@@ -1,9 +1,14 @@
 *.o
-biogpt
-mosestokenizer
 *.bin
 *.json
 *.pt
 *.txt
 
+# Data
 data/
+
+# Executables
+biogpt
+mosestokenizer
+quantize
+main

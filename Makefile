@@ -138,7 +138,7 @@ $(info )
 #
 
 .PHONY: all
-all: biogpt
+all: main
 
 %.o: %.c
 	$(CC)  $(CFLAGS)   -c $< -o $@
@@ -149,11 +149,20 @@ all: biogpt
 %: %.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-biogpt.o: biogpt.cpp ggml.o utils.o mosestokenizer.o bpe.o
+biogpt.o: biogpt.cpp ggml.o mosestokenizer.o bpe.o
 	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
 
-biogpt: biogpt.o ggml.o utils.o mosestokenizer.o bpe.o
+quantize.o: quantize.cpp biogpt.o 
+	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
+
+quantize: quantize.o biogpt.o mosestokenizer.o bpe.o ggml.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+main.o: main.cpp biogpt.o
+	$(CXX) $(CXXFLAGS) -c $< -o $@ $(LDFLAGS)
+
+main: main.o biogpt.o mosestokenizer.o bpe.o ggml.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -vf *.o biogpt mosestokenizer
+	rm -vf *.o biogpt mosestokenizer main quantize

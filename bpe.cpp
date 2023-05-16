@@ -4,8 +4,6 @@
 #include <map>
 #include <vector>
 
-
-
 std::set<word_pair> get_pairs(const std::vector<std::string>& subwords) {
     std::set<word_pair> pairs;
     std::string prev_subword = subwords[0];
@@ -17,7 +15,6 @@ std::set<word_pair> get_pairs(const std::vector<std::string>& subwords) {
     }
     return pairs;
 }
-
 
 std::string bpe(const std::string& token, std::map<word_pair, int>& bpe_ranks) {
     std::vector<std::string> word;
