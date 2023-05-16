@@ -14,7 +14,6 @@ struct biogpt_hparams {
     int32_t d_model     = 1024;
     int32_t n_layer     = 24;
     int32_t n_head      = 16;
-    int32_t f16         = 1;
     int32_t n_positions = 1024;
 
     int32_t ftype       = 0;

@@ -51,7 +51,7 @@ bool biogpt_model_load(
         read_safe(infile, hparams.n_positions);
         read_safe(infile, hparams.d_ff);
         read_safe(infile, hparams.d_model);
-        read_safe(infile, hparams.f16);
+        read_safe(infile, hparams.ftype);
 
         fprintf(stderr, "%s: n_vocab       = %d\n", __func__, hparams.n_vocab);
         fprintf(stderr, "%s: d_ff          = %d\n", __func__, hparams.d_ff);
@@ -59,7 +59,7 @@ bool biogpt_model_load(
         fprintf(stderr, "%s: n_positions   = %d\n", __func__, hparams.n_positions);
         fprintf(stderr, "%s: n_head        = %d\n", __func__, hparams.n_head);
         fprintf(stderr, "%s: n_layer       = %d\n", __func__, hparams.n_layer);
-        fprintf(stderr, "%s: f16           = %d\n", __func__, hparams.f16);
+        fprintf(stderr, "%s: ftype         = %d\n", __func__, hparams.ftype);
     }
 
     // load vocab
@@ -149,7 +149,14 @@ bool biogpt_model_load(
         vocab.n_merges = model.hparams.n_merges;
     }
 
-    const ggml_type wtype = model.hparams.f16 ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    // for the big tensors, we have the option to store the data in 16-bit floats or quantized
+    // in order to save memory and also to speed up the computation
+    ggml_type wtype = ggml_ftype_to_ggml_type((ggml_ftype) (model.hparams.ftype));
+    if (wtype == GGML_TYPE_COUNT) {
+        fprintf(stderr, "%s: invalid model file '%s' (bad ftype value %d)\n",
+                __func__, fname.c_str(), model.hparams.ftype);
+        return false;
+    }
 
     auto & ctx = model.ctx;
 
@@ -159,40 +166,35 @@ bool biogpt_model_load(
     {
         const auto & hparams = model.hparams;
 
-        const int n_vocab = hparams.n_vocab;
-        const int d_ff    = hparams.d_ff;
-        const int d_model = hparams.d_model;
-        const int n_layer = hparams.n_layer;
+        const int n_vocab     = hparams.n_vocab;
+        const int d_ff        = hparams.d_ff;
+        const int d_model     = hparams.d_model;
+        const int n_layer     = hparams.n_layer;
+        const int n_positions = hparams.n_positions;
 
         ctx_size += n_vocab*d_model*ggml_type_size(wtype);  // lm_head
 
         // decoder
         {
-            ctx_size +=     n_vocab*d_model*ggml_type_size(wtype);         // embed_tokens
-            ctx_size += (d_model+2)*d_model*ggml_type_size(wtype);         // embed_pos
-            ctx_size +=           2*d_model*ggml_type_size(GGML_TYPE_F32); // final_ln (w and b)
+            ctx_size +=     n_vocab*d_model*ggml_type_size(wtype);          // embed_tokens
+            ctx_size += (d_model+2)*d_model*ggml_type_size(wtype);          // embed_pos
+            ctx_size +=           2*d_model*ggml_type_size(wtype);          // final_ln (weights and biases)
         }
 
         // decoder layers
         {
-            ctx_size += n_layer*(d_model*d_model*ggml_type_size(wtype));  // q_proj_w
-            ctx_size += n_layer*(d_model*d_model*ggml_type_size(wtype));  // k_proj_w
-            ctx_size += n_layer*(d_model*d_model*ggml_type_size(wtype));  // v_proj_w
-            ctx_size += n_layer*(d_model*d_model*ggml_type_size(wtype));  // o_proj_w
+            ctx_size += 4*n_layer*(d_model*d_model*ggml_type_size(wtype));  // att projection weights
+            ctx_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // att projection biases
 
-            ctx_size += n_layer*(d_model*ggml_type_size(wtype));  // q_proj_b
-            ctx_size += n_layer*(d_model*ggml_type_size(wtype));  // k_proj_b
-            ctx_size += n_layer*(d_model*ggml_type_size(wtype));  // v_proj_b
-            ctx_size += n_layer*(d_model*ggml_type_size(wtype));  // o_proj_b
+            ctx_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // layer norm weights and biases
 
-            ctx_size += 2*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // ln_0_w and ln_0_b
-            ctx_size += 2*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // ln_1_w and ln_1_b
+            ctx_size += 2*n_layer*(d_ff*d_model*ggml_type_size(wtype));     // ff weights
 
-            ctx_size += n_layer*(d_ff*d_model*ggml_type_size(wtype)); // wi_0
-            ctx_size += n_layer*(d_ff*d_model*ggml_type_size(wtype)); // wi_1
+            ctx_size += n_layer*(d_ff*ggml_type_size(GGML_TYPE_F32));       // ff bias
+            ctx_size += n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));    // ff bias
 
-            ctx_size += n_layer*(d_ff*ggml_type_size(wtype));    // bi_0
-            ctx_size += n_layer*(d_model*ggml_type_size(wtype)); // bi_1
+            ctx_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_k
+            ctx_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_v
         }
 
         ctx_size += 100ull*MB; // object overhead
@@ -259,17 +261,17 @@ bool biogpt_model_load(
                 layer.v_proj_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
                 layer.o_proj_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
 
-                layer.ln_0_w = ggml_new_tensor_1d(ctx, wtype, d_model);
-                layer.ln_1_w = ggml_new_tensor_1d(ctx, wtype, d_model);
+                layer.ln_0_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
+                layer.ln_1_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
 
-                layer.ln_0_b = ggml_new_tensor_1d(ctx, wtype, d_model);
-                layer.ln_1_b = ggml_new_tensor_1d(ctx, wtype, d_model);
+                layer.ln_0_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
+                layer.ln_1_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
 
                 layer.fc_0_w = ggml_new_tensor_2d(ctx, wtype, d_model, d_ff);
                 layer.fc_1_w = ggml_new_tensor_2d(ctx, wtype, d_ff, d_model);
 
-                layer.fc_0_b = ggml_new_tensor_1d(ctx, wtype, d_ff);
-                layer.fc_1_b = ggml_new_tensor_1d(ctx, wtype, d_model);
+                layer.fc_0_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_ff);
+                layer.fc_1_b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, d_model);
 
                 model.tensors["biogpt.layers." + std::to_string(i) + ".self_attn.q_proj.weight"] = layer.q_proj_w;
                 model.tensors["biogpt.layers." + std::to_string(i) + ".self_attn.v_proj.weight"] = layer.v_proj_w;
@@ -364,10 +366,10 @@ bool biogpt_model_load(
                 return false;
             }
 
-            const size_t element_size = (ftype == 0) ? sizeof(float) :sizeof(ggml_fp16_t);
-            if (nelements*element_size != ggml_nbytes(tensor)) {
+            const size_t bpe = ggml_type_size(ggml_type(ftype));
+            if ((nelements*bpe)/ggml_blck_size(tensor->type) != ggml_nbytes(tensor)) {
                 fprintf(stderr, "%s: tensor '%s' has wrong size in model file: got %zu, expected %zu\n",
-                        __func__, name.data(), ggml_nbytes(tensor), nelements*element_size);
+                        __func__, name.data(), ggml_nbytes(tensor), nelements*bpe);
                 return false;
             }
 
@@ -436,7 +438,7 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
     while (true) {
         int32_t n_dims;
         int32_t length;
-        int32_t ttype; 
+        int32_t ttype;
 
         read_safe(fin, n_dims);
         read_safe(fin, length);
