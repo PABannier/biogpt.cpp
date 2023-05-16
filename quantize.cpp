@@ -27,7 +27,7 @@ static bool biogpt_model_quantize(
     biogpt_model model;
     biogpt_vocab vocab;
 
-    if (!biogpt_model_load(fname_inp, model, vocab)) {
+    if (!biogpt_model_load(fname_inp, model, vocab, 1)) {
         fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, fname_inp.c_str());
         return 1;
     }
