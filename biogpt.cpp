@@ -19,9 +19,9 @@
 #include <vector>
 
 bool biogpt_model_load(
-        const std::string& fname, 
-        biogpt_model& model, 
-        biogpt_vocab& vocab, 
+        const std::string& fname,
+        biogpt_model& model,
+        biogpt_vocab& vocab,
         const uint8_t verbosity) {
     fprintf(stderr, "%s: loading model from '%s'\n", __func__, fname.c_str());
 
@@ -442,8 +442,8 @@ void biogpt_model_quantize_internal(
             new_size = tensor_size;
             fprintf(stderr, "%s: size = %8.3f MB\n", __func__, tensor_size/1024.0/1024.0);
         } else {
+            float * f32_data;
             new_type = quantized_type;
-            float* f32_data;
             std::vector<uint8_t> f32_conv_buf;
             if (tensor->type == GGML_TYPE_F32) {
                 f32_data = (float *) tensor->data;
@@ -458,54 +458,28 @@ void biogpt_model_quantize_internal(
                 throw fprintf(stderr, "%s: type %s unsupported for integer quantization", __func__, ggml_type_name(tensor->type));
             }
 
-            fprintf(stderr, "quantizing ... ");
+            fprintf(stderr, "quantizing ... \n");
             fflush(stdout);
 
-            work.resize(nelements * 4);  // upper bound on size
-            new_data = &work;
+            work.resize(nelements);  
             std::vector<int64_t> hist_cur(1 << 4, 0);
 
-            int chunk_size = 32 * 512;
-            const int nchunk = (nelements + chunk_size - 1)/chunk_size;
-            const int nthread_use = nthread > 1 ? std::max(1, std::min(nthread, nchunk)) : 1;
-            if (nthread_use < 2) {
-                new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, nelements, hist_cur.data());
-            } else {
-                size_t counter = 0;
-                new_size = 0;
-
-                auto compute = [&mutex, &counter, &hist_cur, &new_size, new_type, f32_data, new_data, nelements, chunk_size] () {
-                    std::vector<int64_t> local_hist;
-                    size_t local_size = 0;
-                    while (true) {
-                        std::unique_lock<std::mutex> lock(mutex);
-                        size_t first = counter; counter += chunk_size;
-                        if (first >= nelements) {
-                            if (!local_hist.empty()) {
-                                for (int j=0; j<int(local_hist.size()); ++j) {
-                                    hist_cur[j] += local_hist[j];
-                                }
-                                new_size += local_size;
-                            }
-                            break;
-                        }
-                        lock.unlock();
-                        size_t last = std::min(nelements, first + chunk_size);
-                        if (local_hist.empty()) {
-                            local_hist.resize(hist_cur.size(), 0);
-                        }
-                        local_size += ggml_quantize_chunk(new_type, f32_data, new_data, first, last - first, local_hist.data());
-                    }
-                };
-                if ((int) workers.size() < nthread_use - 1) {
-                    workers.resize(nthread_use - 1);
-                }
-                for (int it = 0; it < nthread_use - 1; it++) {
-                    workers[it] = std::thread(compute);
-                }
-                compute();
-                for (int it = 0; it < nthread_use - 1; it++) {
-                    workers[it].join();
+            switch ((ggml_type) new_type) {
+                case GGML_TYPE_Q4_0:
+                {
+                    new_size = ggml_quantize_q4_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
+                } break;
+                case GGML_TYPE_Q5_0:
+                {
+                    new_size = ggml_quantize_q5_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
+                } break;
+                case GGML_TYPE_Q8_0:
+                {
+                    new_size = ggml_quantize_q8_0(f32_data, work.data(), nelements, tensor->ne[0], hist_cur.data());
+                } break;
+                default:
+                {
+                    fprintf(stderr, "%s: unsupported quantization type %d (%s)\n", __func__, new_type, ggml_type_name((ggml_type) new_type));
                 }
             }
 
