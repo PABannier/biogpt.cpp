@@ -2,10 +2,6 @@
 *.bin
 *.json
 *.pt
-*.txt
-
-# Data
-data/
 
 # Executables
 biogpt
