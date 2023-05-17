@@ -46,6 +46,21 @@ main:  predict time =  4140.06 ms / 20.39 ms per token
 main:    total time =  4672.20 ms
 ```
 
+## Memory requirements and speed
+
+The inference speeds that I get for the different quantized models on my 16GB MacBook M1 Pro are as follows:
+
+| Model | Size  | Time / Token |
+| ---   | ---   | ---    |
+| Original |  1.5G |   20 ms |
+| Q4_0 | 240M |  8 ms |
+| Q4_1 | 286M |  9 ms |
+| Q5_0 | 265M |  10 ms |
+| Q5_1 | 288M |  11 ms |
+| Q8_0 | 432M |  10 ms |
+| ---  | ---  | ---    |
+
+
 ## Usage
 
 Here are the steps for the BioGPT model.
