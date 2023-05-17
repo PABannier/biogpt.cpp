@@ -1,4 +1,6 @@
 #include "mosestokenizer.h"
+
+#include <stdexcept>
 #include <unordered_map>
 #include <cassert>
 #include <vector>
@@ -76,7 +78,7 @@ std::string perluniprops_chars(const std::string& category) {
     std::string fpath = "data/perluniprops/" + category + ".txt";
     std::ifstream fin(fpath, std::ios::binary);
     if (!fin) {
-        throw "Perl Uniprops file not available";
+        throw std::runtime_error("Perl Uniprops file not available.");
     }
     std::stringstream buffer;
     buffer << fin.rdbuf();

@@ -14,6 +14,7 @@
 #include <sstream>
 #include <map>
 #include <string>
+#include <stdexcept>
 #include <random>
 #include <regex>
 #include <vector>
@@ -361,7 +362,7 @@ bool biogpt_model_load(
             }
 
             if (tensor->ne[0] != ne[0] || tensor->ne[1] != ne[1]) {
-                fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%lld, %lld], expected [%d, %d]\n",
+                fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%ld, %ld], expected [%d, %d]\n",
                         __func__, name.data(), tensor->ne[0], tensor->ne[1], ne[0], ne[1]);
                 return false;
             }
@@ -418,12 +419,12 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
         case GGML_FTYPE_MOSTLY_F16:
         case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16:
                 {
-                    throw fprintf(stderr, "%s: invalid model type %d\n", __func__, ftype);
+                    throw std::runtime_error("invalid model type: " + ftype);
                 }
     };
 
     if (!ggml_is_quantized(qtype)) {
-        throw fprintf(stderr, "%s: invalid quantization type %d (%s)\n", __func__, qtype, ggml_type_name(qtype));
+        throw std::runtime_error("invalid quantization type");
     }
 
     size_t total_size_org = 0;
@@ -466,7 +467,7 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
 
         if (quantize) {
             if (ttype != GGML_TYPE_F32 && ttype != GGML_TYPE_F16) {
-                throw fprintf(stderr, "%s: unsupported ttype %d (%s) for integer quantization\n", __func__, ttype, ggml_type_name((ggml_type) ttype));
+                throw std::runtime_error("unsupported ttype for integer quantization");
             }
 
             if (ttype == GGML_TYPE_F16) {
@@ -537,7 +538,7 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
                 case GGML_TYPE_Q8_1:
                 case GGML_TYPE_COUNT:
                     {
-                        throw fprintf(stderr, "%s: unsupported quantization type %d (%s)\n", __func__, ttype, ggml_type_name((ggml_type) ttype));
+                        throw std::runtime_error("unsupported quantization type");
                     }
             }
 
