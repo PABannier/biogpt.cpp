@@ -1,5 +1,6 @@
 #include "mosestokenizer.h"
 #include <unordered_map>
+#include <cassert>
 #include <vector>
 #include <numeric>
 #include <string>
