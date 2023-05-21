@@ -32,7 +32,7 @@ Trastuzumab (Herceptin) is the first-line treatment for HER2-positive breast can
 US Food and Drug Administration for the treatment of HER2-positive metastatic breast cancer. In the US, approximately 20 %
 of patients with HER2-positive metastatic breast cancer fail to achieve response to first-line treatment with trastuzumab.
 This article discusses the mechanisms of trastuzumab resistance , strategies for overcoming trastuzumab resistance, and the
-potential role of other targeted therapies. New treatment options for multiple myeloma. The past 2 years have seen 
+potential role of other targeted therapies. New treatment options for multiple myeloma. The past 2 years have seen
 significant advances in the treatment of multiple myeloma, particularly with the introduction of novel agents, particularly
 the proteasome inhibitors and immunomodulatory drugs. These new agents are more effective and are associated with fewer
 side effects than the older drugs. Their use has improved survival, with recent clinical trials evaluating combination
@@ -79,7 +79,15 @@ make
 
 ### Prepare data & run
 
-Download the weights from the Huggingface BioGPT page and place them into a `weights` folder.
+Download the weights from the [Huggingface BioGPT page](https://huggingface.co/microsoft/biogpt/tree/main) and place them into a `weights` folder. Your weights folder should look something like this:
+
+```bash
+└── Pre-trained-BioGPT
+    ├── config.json
+    ├── merges.txt
+    ├── pytorch_model.bin
+    └── vocab.json
+```
 
 Then,
 
