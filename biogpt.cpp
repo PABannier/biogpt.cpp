@@ -207,11 +207,7 @@ bool biogpt_model_load(
 
     // create the ggml context
     {
-        struct ggml_init_params params = {
-            .mem_size   = ctx_size,
-            .mem_buffer = NULL,
-            .no_alloc   = false,
-        };
+        struct ggml_init_params params = { ctx_size, NULL, false };
 
         model.ctx = ggml_init(params);
         if(!model.ctx) {
@@ -593,11 +589,7 @@ bool biogpt_eval(
         }
     }
 
-    struct ggml_init_params params = {
-        .mem_size   = buf_size,
-        .mem_buffer = buf,
-        .no_alloc   = false,
-    };
+    struct ggml_init_params params = { buf_size, buf, false };
 
     struct ggml_context * ctx0 = ggml_init(params);
     struct ggml_cgraph    gf   = {};
