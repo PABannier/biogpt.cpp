@@ -12,7 +12,7 @@ This is achieved using the [ggml](https://github.com/ggerganov/ggml) library use
 Here is a typical run using BioGPT:
 
 ```java
-./biogpt -p "trastuzumab"
+./main -p "trastuzumab"
 main: seed = 1684061910
 biogpt_model_load: loading model from './ggml_weights/ggml-model.bin'
 biogpt_model_load: n_vocab       = 42384
