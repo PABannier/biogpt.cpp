@@ -82,7 +82,7 @@ make
 Download the weights from the [Huggingface BioGPT page](https://huggingface.co/microsoft/biogpt/tree/main) and place them into a `weights` folder. Your weights folder should look something like this:
 
 ```bash
-└── Pre-trained-BioGPT
+└── weights
     ├── config.json
     ├── merges.txt
     ├── pytorch_model.bin
