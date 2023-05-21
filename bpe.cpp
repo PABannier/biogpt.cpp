@@ -1,4 +1,5 @@
 #include "bpe.h"
+#include <algorithm>
 #include <iostream>
 #include <set>
 #include <map>
