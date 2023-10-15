@@ -94,7 +94,7 @@ Download the weights from the [Huggingface BioGPT page](https://huggingface.co/m
 Then,
 
 ```bash
-python convert_pt_to_ggml.py --dir-model ./weights/Pre-trained-BioGPT/ --out-dir ./ggml_weights
+python convert.py --dir-model ./weights/Pre-trained-BioGPT/ --out-dir ./ggml_weights
 ```
 
 ## API
