@@ -1,9 +1,3 @@
-#include "biogpt.h"
-#include "biogpt-util.h"
-#include "bpe.h"
-#include "ggml.h"
-#include "mosestokenizer.h"
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -19,11 +13,22 @@
 #include <regex>
 #include <vector>
 
+#include "ggml.h"
+#include "ggml-backend.h"
+#include "ggml-alloc.h"
+
+#include "biogpt.h"
+#include "bpe.h"
+#include "mosestokenizer.h"
+
+#define NORM_EPS 1e-5f
+
+
 bool biogpt_model_load(
-        const std::string& fname,
-        biogpt_model& model,
-        biogpt_vocab& vocab,
-        const uint8_t verbosity) {
+        const std::string & fname,
+             biogpt_model & model,
+             biogpt_vocab & vocab,
+            const uint8_t   verbosity) {
     fprintf(stderr, "%s: loading model from '%s'\n", __func__, fname.c_str());
 
     auto infile = std::ifstream(fname, std::ios::binary);
@@ -161,7 +166,7 @@ bool biogpt_model_load(
 
     auto & ctx = model.ctx;
 
-    size_t ctx_size = 0;
+    size_t buffer_size  = 0;
 
     // Evaluating context size
     {
@@ -173,48 +178,68 @@ bool biogpt_model_load(
         const int n_layer     = hparams.n_layer;
         const int n_positions = hparams.n_positions;
 
-        ctx_size += n_vocab*d_model*ggml_type_size(wtype);  // lm_head
+        buffer_size += n_vocab*d_model*ggml_type_size(wtype);  // lm_head
 
         // decoder
         {
-            ctx_size +=     n_vocab*d_model*ggml_type_size(wtype);          // embed_tokens
-            ctx_size += (d_model+2)*d_model*ggml_type_size(wtype);          // embed_pos
-            ctx_size +=           2*d_model*ggml_type_size(wtype);          // final_ln (weights and biases)
+            buffer_size +=     n_vocab*d_model*ggml_type_size(wtype);          // embed_tokens
+            buffer_size += (d_model+2)*d_model*ggml_type_size(wtype);          // embed_pos
+            buffer_size +=           2*d_model*ggml_type_size(wtype);          // final_ln (weights and biases)
         }
 
         // decoder layers
         {
-            ctx_size += 4*n_layer*(d_model*d_model*ggml_type_size(wtype));  // att projection weights
-            ctx_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // att projection biases
+            buffer_size += 4*n_layer*(d_model*d_model*ggml_type_size(wtype));  // att projection weights
+            buffer_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // att projection biases
 
-            ctx_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // layer norm weights and biases
+            buffer_size += 4*n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));  // layer norm weights and biases
 
-            ctx_size += 2*n_layer*(d_ff*d_model*ggml_type_size(wtype));     // ff weights
+            buffer_size += 2*n_layer*(d_ff*d_model*ggml_type_size(wtype));     // ff weights
 
-            ctx_size += n_layer*(d_ff*ggml_type_size(GGML_TYPE_F32));       // ff bias
-            ctx_size += n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));    // ff bias
+            buffer_size += n_layer*(d_ff*ggml_type_size(GGML_TYPE_F32));       // ff bias
+            buffer_size += n_layer*(d_model*ggml_type_size(GGML_TYPE_F32));    // ff bias
 
-            ctx_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_k
-            ctx_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_v
+            buffer_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_k
+            buffer_size += n_positions*n_layer*d_model*ggml_type_sizef(GGML_TYPE_F32); // memory_v
         }
 
-        ctx_size += 100ull*MB; // object overhead
+        buffer_size += (4 + 18*n_layer)*128; // alignment overhead
 
         if (verbosity > 0) {
-            fprintf(stderr, "%s: ggml ctx size = %7.2f MB\n", __func__, ctx_size/(1024.0*1024.0));
+            printf("%s: ggml tensor size    = %d bytes\n", __func__, (int) sizeof(ggml_tensor));
+            printf("%s: backend buffer size = %6.2f MB\n", __func__, buffer_size/(1024.0*1024.0));
         }
     }
 
     // create the ggml context
     {
-        struct ggml_init_params params = { ctx_size, NULL, false };
+        size_t n_tensors = 4 + 18*model.hparams.n_layer;
+        struct ggml_init_params params = {
+            /*.mem_size   =*/ ggml_tensor_overhead() * n_tensors,
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc   =*/ true,
+        };
 
         model.ctx = ggml_init(params);
-        if(!model.ctx) {
+        if (!model.ctx) {
             fprintf(stderr, "%s: ggml_init() failed\n", __func__);
             return false;
         }
     }
+
+    if (!model.backend) {
+        // fallback to CPU backend
+        fprintf(stderr, "%s: using CPU backend\n", __func__);
+        model.backend = ggml_backend_cpu_init();
+    }
+
+    if (!model.backend) {
+        fprintf(stderr, "%s: ggml_backend_cpu_init() failed\n", __func__);
+        return false;
+    }
+
+    // allocate weights buffer
+    model.buffer_w = ggml_backend_alloc_buffer(model.backend, buffer_size);
 
     // prepare memory for the weights
     {
@@ -314,12 +339,32 @@ bool biogpt_model_load(
         if (verbosity > 0) {
             printf("%s: memory size = %8.2f MB, n_mem = %d\n", __func__, memory_size/1024.0/1024.0, n_mem);
         }
+
+        // create a backend buffer (can be in host or device memory)
+        model.buffer_kv = ggml_backend_alloc_buffer(model.backend, memory_size + 256);
+
+        // allocate the tensors into the backend buffer
+        {
+            ggml_allocr * alloc = ggml_allocr_new_from_buffer(model.buffer_kv);
+
+            // this updates the pointers in the tensors to point to the correct location in the buffer
+            // this is necessary since the ggml_context is .no_alloc == true
+            // note that the buffer can actually be a device buffer, depending on the backend
+            ggml_allocr_alloc(alloc, model.memory_k);
+            ggml_allocr_alloc(alloc, model.memory_v);
+
+            ggml_allocr_free(alloc);
+        }
     }
 
     // load weights
     {
+        ggml_allocr * alloc = ggml_allocr_new_from_buffer(model.buffer_w);
+
         size_t total_size = 0;
         model.n_loaded    = 0;
+
+        std::vector<char> read_buf;
 
         while(true) {
             int32_t n_dims;
@@ -352,13 +397,14 @@ bool biogpt_model_load(
             }
 
             auto tensor = model.tensors[name.data()];
+            ggml_set_name(tensor, name.c_str());
             if (ggml_nelements(tensor) != nelements) {
                 fprintf(stderr, "%s: tensor '%s' has wrong size in model file\n", __func__, name.data());
                 return false;
             }
 
             if (tensor->ne[0] != ne[0] || tensor->ne[1] != ne[1]) {
-                fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%ld, %ld], expected [%d, %d]\n",
+                fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%lld, %lld], expected [%d, %d]\n",
                         __func__, name.data(), tensor->ne[0], tensor->ne[1], ne[0], ne[1]);
                 return false;
             }
@@ -369,8 +415,16 @@ bool biogpt_model_load(
                         __func__, name.data(), ggml_nbytes(tensor), nelements*bpe);
                 return false;
             }
+            
+            ggml_allocr_alloc(alloc, tensor);
 
-            infile.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
+            if (ggml_backend_is_cpu(model.backend)) {
+                infile.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
+            } else {
+                read_buf.resize(ggml_nbytes(tensor));
+                infile.read(read_buf.data(), ggml_nbytes(tensor));
+                ggml_backend_tensor_set(tensor, read_buf.data(), 0, ggml_nbytes(tensor));
+            }
 
             if (verbosity > 0) {
                 printf("%48s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
@@ -378,6 +432,8 @@ bool biogpt_model_load(
             total_size += ggml_nbytes(tensor);
             model.n_loaded++;
         }
+
+        ggml_allocr_free(alloc);
 
         if (verbosity > 0) {
             fprintf(stderr, "%s: model size    = %7.2f MB\n", __func__, total_size/1024.0/1024.0);
@@ -406,7 +462,6 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
     switch (ftype) {
         case GGML_FTYPE_MOSTLY_Q4_0: qtype = GGML_TYPE_Q4_0; break;
         case GGML_FTYPE_MOSTLY_Q4_1: qtype = GGML_TYPE_Q4_1; break;
-        case GGML_FTYPE_MOSTLY_Q4_2: qtype = GGML_TYPE_Q4_2; break;
         case GGML_FTYPE_MOSTLY_Q5_0: qtype = GGML_TYPE_Q5_0; break;
         case GGML_FTYPE_MOSTLY_Q5_1: qtype = GGML_TYPE_Q5_1; break;
         case GGML_FTYPE_MOSTLY_Q8_0: qtype = GGML_TYPE_Q8_0; break;
@@ -414,8 +469,14 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
         case GGML_FTYPE_ALL_F32:
         case GGML_FTYPE_MOSTLY_F16:
         case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16:
+        case GGML_FTYPE_MOSTLY_Q2_K:
+        case GGML_FTYPE_MOSTLY_Q3_K:
+        case GGML_FTYPE_MOSTLY_Q4_K:
+        case GGML_FTYPE_MOSTLY_Q5_K:
+        case GGML_FTYPE_MOSTLY_Q6_K:
                 {
-                    throw std::runtime_error("invalid model type: " + ftype);
+                    fprintf(stderr, "%s: invalid model type %d\n", __func__, ftype);
+                    throw std::runtime_error("invalid model type");
                 }
     };
 
@@ -510,10 +571,6 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
                     {
                         cur_size = ggml_quantize_q4_1(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
                     } break;
-                case GGML_TYPE_Q4_2:
-                    {
-                        cur_size = ggml_quantize_q4_2(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
-                    } break;
                 case GGML_TYPE_Q5_0:
                     {
                         cur_size = ggml_quantize_q5_0(data_f32.data(), work.data(), nelements, ne[0], hist_cur.data());
@@ -532,8 +589,15 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
                 case GGML_TYPE_I16:
                 case GGML_TYPE_I32:
                 case GGML_TYPE_Q8_1:
+                case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
+                case GGML_TYPE_Q4_K:
+                case GGML_TYPE_Q5_K:
+                case GGML_TYPE_Q6_K:
+                case GGML_TYPE_Q8_K:
                 case GGML_TYPE_COUNT:
                     {
+                        fprintf(stderr, "%s: unsupported quantization type %d (%s)\n", __func__, ttype, ggml_type_name((ggml_type) ttype));
                         throw std::runtime_error("unsupported quantization type");
                     }
             }
@@ -556,13 +620,12 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
     printf("%s: quant size  = %8.2f MB | ftype = %d (%s)\n", __func__, total_size_new/1024.0/1024.0, ftype, ggml_type_name(qtype));
 }
 
-bool biogpt_eval(
-    const biogpt_model& model,
-    const int n_threads,
-    const int n_past,
-    const std::vector<biogpt_vocab::id> & embed_inp,
-          std::vector<float>            & logits,
-          size_t                        & mem_per_token) {
+// build the computation graph
+struct ggml_cgraph * biogpt_graph(
+            const biogpt_model & model,
+            struct ggml_allocr * allocr, 
+          const token_sequence & embed_inp,
+                     const int   n_past) {
     const int N = embed_inp.size();
 
     const auto & hparams = model.hparams;
@@ -575,28 +638,27 @@ bool biogpt_eval(
 
     const int d_kv        = d_model/n_head;
 
-    static size_t buf_size = 256u*1024*1024;
-    static void * buf      = malloc(buf_size);
+    // since we are using ggml-alloc, this buffer only needs enough space to hold the ggml_tensor and ggml_cgraph structs, but not the tensor data
+    static size_t buf_size = ggml_tensor_overhead()*GGML_MAX_NODES + ggml_graph_overhead();
+    static std::vector<uint8_t> buf(buf_size);
 
-    if (mem_per_token > 0 && mem_per_token*N > buf_size) {
-        const size_t buf_size_new = 1.1*(mem_per_token*N);  // add 10% to account for ggml object overhead
-
-        buf_size = buf_size_new;
-        buf = realloc(buf, buf_size);
-        if (buf == nullptr) {
-            fprintf(stderr, "%s: failed to allocate %zu bytes\n", __func__, buf_size);
-            return false;
-        }
-    }
-
-    struct ggml_init_params params = { buf_size, buf, false };
+    struct ggml_init_params params = {
+        /*.mem_size   =*/ buf_size,
+        /*.mem_buffer =*/ buf.data(),
+        /*.no_alloc   =*/ true, // the tensors will be allocated later by ggml_allocr_alloc_graph()
+    };
 
     struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph    gf   = {};
-    gf.n_threads = n_threads;
+
+    struct ggml_cgraph * gf = ggml_new_graph(ctx0);
 
     struct ggml_tensor * embd = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
-    memcpy(embd->data, embed_inp.data(), N*ggml_element_size(embd));
+    ggml_allocr_alloc(allocr, embd);
+
+    // avoid writing to tensors if we are only measuring the memory usage
+    if (!ggml_allocr_is_measure(allocr)) {
+        ggml_backend_tensor_set(embd, embed_inp.data(), 0, N*ggml_element_size(embd));
+    }
 
     // token embeddings
     struct ggml_tensor * embed_tokens = ggml_get_rows(ctx0, model.embed_tokens, embd);
@@ -604,21 +666,31 @@ bool biogpt_eval(
 
     // position embeddings
     struct ggml_tensor * positions = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, N);
-    for (int i = 0; i < N; ++i) {
-        // +2 since BioGPT offsets the embedding ids by 2. specific to biogpt.
-        ((int32_t *) positions->data)[i] = n_past + i + 2;
+    ggml_allocr_alloc(allocr, positions);
+    if (!ggml_allocr_is_measure(allocr)) {
+        for (int i = 0; i < N; ++i) {
+            int32_t v = n_past + i + 2;  // + 2 offset for BioGPT
+            ggml_backend_tensor_set(positions, &v, i*sizeof(int32_t), sizeof(v));
+        }
     }
     struct ggml_tensor * embed_positions = ggml_get_rows(ctx0, model.embed_pos, positions);
 
+    struct ggml_tensor * Q_scale = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, 1);
+    ggml_allocr_alloc(allocr, Q_scale);
+    if (!ggml_allocr_is_measure(allocr)) {
+        float s = 1.0f/sqrtf(float(d_kv));
+        ggml_backend_tensor_set(Q_scale, &s, 0, sizeof(s));
+    }
+
     // token embeddings + position embeddings
-    struct ggml_tensor *inpL = ggml_add(ctx0, embed_tokens, embed_positions);
+    struct ggml_tensor * inpL = ggml_add(ctx0, embed_tokens, embed_positions);
 
     for (int layer_ix = 0; layer_ix < n_layer; ++layer_ix) {
         struct ggml_tensor * current;
 
         // self-attention layer norm
         {
-            current = ggml_norm(ctx0, inpL);
+            current = ggml_norm(ctx0, inpL, NORM_EPS);
             current = ggml_add(
                 ctx0,
                 ggml_mul(
@@ -635,7 +707,7 @@ bool biogpt_eval(
             q_curr = ggml_reshape_3d(ctx0, q_curr, d_kv, n_head, N);
 
             // biogpt scales the query
-            q_curr = ggml_scale(ctx0, q_curr, ggml_new_f32(ctx0, 1.0f/sqrt(float(d_kv))));
+            q_curr = ggml_scale(ctx0, q_curr, Q_scale);
 
             struct ggml_tensor * k_curr = ggml_mul_mat(ctx0, model.layers_decoder[layer_ix].k_proj_w, current);
             k_curr = ggml_add(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].k_proj_b, k_curr), k_curr);
@@ -650,8 +722,8 @@ bool biogpt_eval(
                 struct ggml_tensor * k = ggml_view_1d(ctx0, model.memory_k, N*d_model, (ggml_element_size(model.memory_k)*d_model)*(layer_ix*n_positions + n_past));
                 struct ggml_tensor * v = ggml_view_1d(ctx0, model.memory_v, N*d_model, (ggml_element_size(model.memory_v)*d_model)*(layer_ix*n_positions + n_past));
 
-                ggml_build_forward_expand(&gf, ggml_cpy(ctx0, k_curr, k));
-                ggml_build_forward_expand(&gf, ggml_cpy(ctx0, v_curr, v));
+                ggml_build_forward_expand(gf, ggml_cpy(ctx0, k_curr, k));
+                ggml_build_forward_expand(gf, ggml_cpy(ctx0, v_curr, v));
             }
 
             // (d_kv, N, n_head)
@@ -704,7 +776,7 @@ bool biogpt_eval(
         // feed forward
         {
             // final layer norm
-            current = ggml_norm(ctx0, inpFF);
+            current = ggml_norm(ctx0, inpFF, NORM_EPS);
             current = ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_w, current), current), ggml_repeat(ctx0, model.layers_decoder[layer_ix].ln_1_b, current));
 
             // fc1
@@ -724,40 +796,66 @@ bool biogpt_eval(
     }
 
     // final norm layer
-    inpL = ggml_norm(ctx0, inpL);
+    inpL = ggml_norm(ctx0, inpL, NORM_EPS);
     inpL = ggml_add(ctx0, ggml_mul(ctx0, ggml_repeat(ctx0, model.ln_w, inpL), inpL), ggml_repeat(ctx0, model.ln_b, inpL));
 
     // lm head
     inpL = ggml_mul_mat(ctx0, model.lm_head, inpL);
 
-    // run computation
-    ggml_build_forward_expand(&gf, inpL);
-    ggml_graph_compute       (ctx0, &gf);
+    ggml_build_forward_expand(gf, inpL);
+    
+    ggml_free(ctx0);
+
+    return gf;
+}
+
+bool biogpt_eval(
+       const biogpt_model & model,
+     const token_sequence & embed_inp,
+       std::vector<float> & logits,
+       struct ggml_allocr * allocr,
+                const int   n_past,
+                const int   n_threads) {
+    const int N = embed_inp.size();
+
+    const auto & hparams = model.hparams;
+
+    const int n_vocab = hparams.n_vocab;
+
+    // reset the allocator to free all the memory allocated during the previous inference
+    ggml_allocr_reset(allocr);
+
+    struct ggml_cgraph * gf = biogpt_graph(model, allocr, embed_inp, n_past);
+
+    // allocate tensors
+    ggml_allocr_alloc_graph(allocr, gf);
+
+    // run the computation
+    if (ggml_backend_is_cpu(model.backend)) {
+        ggml_backend_cpu_set_n_threads(model.backend, n_threads);
+    }
+
+    ggml_backend_graph_compute(model.backend, gf);
+
+    struct ggml_tensor * inpL = gf->nodes[gf->n_nodes - 1];
 
     // return result for just the last token
     logits.resize(n_vocab);
-    memcpy(logits.data(), (float *) ggml_get_data(inpL) + (n_vocab*(N-1)), sizeof(float)*n_vocab);
-
-    if (mem_per_token == 0) {
-        mem_per_token = ggml_used_mem(ctx0)/N;
-    }
-
-    ggml_free(ctx0);
+    ggml_backend_tensor_get(inpL, logits.data(), (N - 1)*n_vocab*sizeof(float), n_vocab*sizeof(float));
 
     return true;
 }
 
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
-std::vector<biogpt_vocab::id> gpt_tokenize(
-    biogpt_vocab & vocab,
-    const std::string  & text,
-    const std::string  & lang
-) {
+token_sequence gpt_tokenize(
+          biogpt_vocab & vocab,
+     const std::string & text,
+     const std::string & lang) {
     // Moses tokenization
     std::vector<std::string> words = moses_tokenize(text, lang);
 
     // byte-pair encoding and map to vocabulary
-    std::vector<biogpt_vocab::id> tokens;
+    token_sequence tokens;
     tokens.push_back(2);  // </s> to start the sequence.
     for (const auto & word : words) {
         std::string bpe_word = bpe(word, vocab.bpe_ranks);

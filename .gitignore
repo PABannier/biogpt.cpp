@@ -1,10 +1,9 @@
-*.o
+main.dSYM
 *.bin
-*.json
-*.pt
 
-# Executables
-biogpt
-mosestokenizer
-quantize
-main
+*.o
+*.pt
+.vscode/
+
+build/
+weights/

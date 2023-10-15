@@ -75,7 +75,7 @@ std::vector<std::string> numeric_only_prefixes(const std::vector<std::string>& p
 
 
 std::string perluniprops_chars(const std::string& category) {
-    std::string fpath = "data/perluniprops/" + category + ".txt";
+    std::string fpath = "../../data/perluniprops/" + category + ".txt";
     std::ifstream fin(fpath, std::ios::binary);
     if (!fin) {
         throw std::runtime_error("Perl Uniprops file not available.");
