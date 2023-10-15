@@ -74,7 +74,9 @@ cd biogpt.cpp
 ### Build
 
 ```bash
-make
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release
 ```
 
 ### Prepare data & run
