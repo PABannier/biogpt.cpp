@@ -6,3 +6,4 @@ main.dSYM
 .vscode/
 
 build/
+weights/
