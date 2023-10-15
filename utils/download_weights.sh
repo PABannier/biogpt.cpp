@@ -1,6 +1,6 @@
 #!/bin/bash
 
-WEIGHTS_DIR="./weights"
+WEIGHTS_DIR="../weights"
 
 WEIGHTS_LINKS=(
     "https://msramllasc.blob.core.windows.net/modelrelease/BioGPT/checkpoints/Pre-trained-BioGPT.tgz"
