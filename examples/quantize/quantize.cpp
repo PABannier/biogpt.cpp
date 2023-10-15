@@ -1,8 +1,9 @@
-#include "biogpt-util.h"
-#include "biogpt.h"
-
+#include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
+
+#include "biogpt.h"
 
 static bool biogpt_model_quantize(
         const std::string & fname_inp,

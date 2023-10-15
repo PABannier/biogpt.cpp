@@ -33,7 +33,6 @@ add_library(
         bpe.h
         mosestokenizer.cpp
         mosestokenizer.h
-        biogpt-util.h
 )
 
 if (BIOGPT_BUILD_EXAMPLES)

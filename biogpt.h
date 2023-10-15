@@ -1,11 +1,26 @@
 #pragma once
 
-#include "biogpt-util.h"
-
+#include <fstream>
+#include <iostream>
 #include <map>
 #include <random>
 #include <thread>
 #include <string>
+
+#include "bpe.h"
+#include "ggml-backend.h"
+
+#define BIOGPT_FILE_MAGIC   'ggml'
+
+template<typename T>
+static void read_safe(std::ifstream& infile, T& dest) {
+    infile.read((char*)& dest, sizeof(T));
+}
+
+template<typename T>
+static void write_safe(std::ofstream& outfile, T& dest) {
+    outfile.write((char*)& dest, sizeof(T));
+}
 
 struct biogpt_hparams {
     int32_t n_vocab     = 42384;
@@ -83,6 +98,12 @@ struct biogpt_model {
     struct ggml_context * ctx;
     std::map<std::string, struct ggml_tensor *> tensors;
     int n_loaded;
+
+    // memory
+    ggml_backend_t backend = NULL;
+    
+    ggml_backend_buffer_t buffer_w;
+    ggml_backend_buffer_t buffer_kv;
 };
 
 struct biogpt_params {
@@ -115,11 +136,17 @@ void biogpt_model_quantize_internal(
             std::ofstream & fout,
          const ggml_ftype   ftype);
 
+struct ggml_cgraph * biogpt_graph(
+            const biogpt_model & model,
+            struct ggml_allocr * allocr, 
+          const token_sequence & embed_inp,
+                     const int   n_past);
+
 bool biogpt_eval(
        const biogpt_model & model,
      const token_sequence & embed_inp,
        std::vector<float> & logits,
-                   size_t & mem_per_token,
+       struct ggml_allocr * allocr,
                 const int   n_past,
                 const int   n_threads);
 
