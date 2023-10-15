@@ -2,7 +2,7 @@
 #include "ggml.h"
 
 #include <random>
-#include <string> 
+#include <string>
 #include <vector>
 
 int main(int argc, char **argv) {
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
     std::vector<float> logits;
 
     // tokenize the prompt
-    std::vector<biogpt_vocab::id> embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
+    token_sequence embed_inp = gpt_tokenize(vocab, params.prompt, params.lang);
 
     params.n_predict = std::min(params.n_predict, model.hparams.n_positions - (int) embed_inp.size());
 
@@ -58,18 +58,18 @@ int main(int argc, char **argv) {
     }
     printf("\n\n");
 
-    std::vector<biogpt_vocab::id> embed;
+    token_sequence embed;
 
     // determine the required inference memory per token
     size_t mem_per_token = 0;
-    biogpt_eval(model, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);
+    biogpt_eval(model, { 0, 1, 2, 3 }, logits, mem_per_token, 0, params.n_threads);
 
     for (int i = embed.size(); i < (int) embed_inp.size() + params.n_predict; i++) {
         // predict
         if (embed.size() > 0) {
             const int64_t t_start_us = ggml_time_us();
 
-            if(!biogpt_eval(model, params.n_threads, n_past, embed, logits, mem_per_token)) {
+            if(!biogpt_eval(model, embed, logits, mem_per_token, n_past, params.n_threads)) {
                 printf("Failed to predict\n");
                 return 1;
             }

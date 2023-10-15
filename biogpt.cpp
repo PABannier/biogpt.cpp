@@ -557,12 +557,12 @@ void biogpt_model_quantize_internal(std::ifstream & fin, std::ofstream & fout, c
 }
 
 bool biogpt_eval(
-    const biogpt_model& model,
-    const int n_threads,
-    const int n_past,
-    const std::vector<biogpt_vocab::id> & embed_inp,
-          std::vector<float>            & logits,
-          size_t                        & mem_per_token) {
+       const biogpt_model & model,
+     const token_sequence & embed_inp,
+       std::vector<float> & logits,
+                   size_t & mem_per_token,
+                const int   n_past,
+                const int   n_threads) {
     const int N = embed_inp.size();
 
     const auto & hparams = model.hparams;
@@ -748,16 +748,15 @@ bool biogpt_eval(
 }
 
 // Extracted from https://github.com/ggerganov/ggml/blob/master/examples/common.cpp
-std::vector<biogpt_vocab::id> gpt_tokenize(
-    biogpt_vocab & vocab,
-    const std::string  & text,
-    const std::string  & lang
-) {
+token_sequence gpt_tokenize(
+          biogpt_vocab & vocab,
+     const std::string & text,
+     const std::string & lang) {
     // Moses tokenization
     std::vector<std::string> words = moses_tokenize(text, lang);
 
     // byte-pair encoding and map to vocabulary
-    std::vector<biogpt_vocab::id> tokens;
+    token_sequence tokens;
     tokens.push_back(2);  // </s> to start the sequence.
     for (const auto & word : words) {
         std::string bpe_word = bpe(word, vocab.bpe_ranks);

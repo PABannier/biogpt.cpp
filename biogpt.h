@@ -32,6 +32,8 @@ struct biogpt_vocab {
     std::map<word_pair, int> bpe_ranks;
 };
 
+typedef std::vector<biogpt_vocab::id> token_sequence;
+
 struct biogpt_layer_decoder {
     // self-attention
     struct ggml_tensor * q_proj_w;
@@ -103,39 +105,40 @@ struct biogpt_params {
 };
 
 bool biogpt_model_load(
-        const std::string& fname,
-        biogpt_model& model,
-        biogpt_vocab& vocab,
-        const uint8_t verbosity);
+        const std::string & fname,
+             biogpt_model & model,
+             biogpt_vocab & vocab,
+            const uint8_t   verbosity);
 
 void biogpt_model_quantize_internal(
-        std::ifstream & fin,
-        std::ofstream & fout,
-        const ggml_ftype ftype);
+            std::ifstream & fin,
+            std::ofstream & fout,
+         const ggml_ftype   ftype);
 
 bool biogpt_eval(
-        const biogpt_model& model,
-        const int n_threads,
-        const int n_past,
-        const std::vector<biogpt_vocab::id> & embed_inp,
-              std::vector<float>            & logits,
-              size_t                        & mem_per_token);
+       const biogpt_model & model,
+     const token_sequence & embed_inp,
+       std::vector<float> & logits,
+                   size_t & mem_per_token,
+                const int   n_past,
+                const int   n_threads);
 
-std::vector<biogpt_vocab::id> gpt_tokenize(
-    biogpt_vocab & vocab,
-    const std::string  & text,
-    const std::string  & lang
-);
+token_sequence gpt_tokenize(
+             biogpt_vocab & vocab,
+        const std::string & text,
+        const std::string & lang);
 
-std::string gpt_decode(std::vector<std::string>& tokens, const std::string& lang);
+std::string gpt_decode(
+ std::vector<std::string> & tokens,
+        const std::string & lang);
 
 biogpt_vocab::id biogpt_sample_top_k_top_p(
-        const biogpt_vocab & vocab,
-        const float * logits,
-        int    top_k,
-        double top_p,
-        double temp,
-        std::mt19937 & rng);
+       const biogpt_vocab & vocab,
+              const float * logits,
+                      int   top_k,
+                   double   top_p,
+                   double   temp,
+             std::mt19937 & rng);
 
 bool biogpt_params_parse(int argc, char ** argv, biogpt_params & params);
 
