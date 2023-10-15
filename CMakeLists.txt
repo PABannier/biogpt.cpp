@@ -38,9 +38,9 @@ add_library(
         biogpt-util.h
 )
 
-# if (BIOGPT_BUILD_EXAMPLES)
-#     add_subdirectory(examples)
-# endif()
+if (BIOGPT_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
 target_link_libraries(${BIOGPT_LIB} PUBLIC ggml)
 target_include_directories(${BIOGPT_LIB} PUBLIC .)
