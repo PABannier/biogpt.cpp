@@ -22,15 +22,13 @@ option(BIOGPT_BUILD_EXAMPLES             "biogpt: build examples" ${BIOGPT_STAND
 
 set(BIOGPT_LIB biogpt.cpp)
 
-# add_subdirectory(ggml)
+add_subdirectory(ggml)
 
 add_library(
         ${BIOGPT_LIB}
         biogpt
         biogpt.cpp
         biogpt.h
-        ggml.c
-        ggml.h
         bpe.cpp
         bpe.h
         mosestokenizer.cpp
