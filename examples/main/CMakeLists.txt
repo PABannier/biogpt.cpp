@@ -1,4 +1,4 @@
-set(TARGET main)
+set(TARGET biogpt)
 
 add_executable(${TARGET} main.cpp)
 

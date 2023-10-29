@@ -42,3 +42,6 @@ endif()
 target_link_libraries(${BIOGPT_LIB} PUBLIC ggml)
 target_include_directories(${BIOGPT_LIB} PUBLIC .)
 target_compile_features(${BIOGPT_LIB} PUBLIC cxx_std_11)
+
+# Copy Perl Uniprops assets in `data` subdirectory
+file(COPY ${CMAKE_SOURCE_DIR}/data/ DESTINATION ${CMAKE_BINARY_DIR}/data/)
