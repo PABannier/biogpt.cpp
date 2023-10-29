@@ -8,6 +8,8 @@
 #include <string>
 #include <regex>
 
+const std::string PERL_UNIPROPS_BASE_PATH = "../data/perluniprops/";
+const std::string NONBREAKING_PREFIXES_BASE_PATH = "../data/nonbreaking_prefixes/";
 
 std::vector<std::string> nonbreaking_prefixes_words(std::string lang = "", std::string ignore_lines_startswith = "#") {
     std::vector<std::string> result;
@@ -24,7 +26,7 @@ std::vector<std::string> nonbreaking_prefixes_words(std::string lang = "", std::
         filenames.push_back("nonbreaking_prefix.en");
 
         for (const auto& filename : filenames) {
-            std::ifstream file("data/nonbreaking_prefixes/" + filename);
+            std::ifstream file(NONBREAKING_PREFIXES_BASE_PATH + filename);
             std::string line;
             while (std::getline(file, line)) {
                 line = line.substr(0, line.find(ignore_lines_startswith));
@@ -40,7 +42,7 @@ std::vector<std::string> nonbreaking_prefixes_words(std::string lang = "", std::
             lang = "nonbreaking_prefix.en";
         }
 
-        std::ifstream file("data/nonbreaking_prefixes/" + lang);
+        std::ifstream file(NONBREAKING_PREFIXES_BASE_PATH + lang);
         std::string line;
         while (std::getline(file, line)) {
             line = line.substr(0, line.find(ignore_lines_startswith));
@@ -73,9 +75,8 @@ std::vector<std::string> numeric_only_prefixes(const std::vector<std::string>& p
     return results;
 }
 
-
-std::string perluniprops_chars(const std::string& category) {
-    std::string fpath = "../../data/perluniprops/" + category + ".txt";
+std::string perluniprops_chars(const std::string & category) {
+    std::string fpath = PERL_UNIPROPS_BASE_PATH + category + ".txt";
     std::ifstream fin(fpath, std::ios::binary);
     if (!fin) {
         throw std::runtime_error("Perl Uniprops file not available.");

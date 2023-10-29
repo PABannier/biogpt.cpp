@@ -120,7 +120,7 @@ struct biogpt_params {
 
     int32_t n_batch = 8; // batch size for prompt processing
 
-    std::string model = "./ggml_weights/ggml-model.bin"; // model path
+    std::string model = "../ggml_weights/ggml-model.bin"; // model path
     std::string prompt;
     std::string lang;
 };

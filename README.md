@@ -11,8 +11,8 @@ This is achieved using the [ggml](https://github.com/ggerganov/ggml) library use
 
 Here is a typical run using BioGPT:
 
-```java
-./main -p "trastuzumab"
+```bash
+$ ./main -p "trastuzumab"
 main: seed = 1684061910
 biogpt_model_load: loading model from './ggml_weights/ggml-model.bin'
 biogpt_model_load: n_vocab       = 42384
@@ -67,19 +67,11 @@ Here are the steps for the BioGPT model.
 ### Get the code
 
 ```bash
-git clone https://github.com/PABannier/biogpt.cpp.git
+git clone --recursive https://github.com/PABannier/biogpt.cpp.git
 cd biogpt.cpp
 ```
 
-### Build
-
-```bash
-mkdir build && cd build
-cmake ..
-cmake --build . --config Release
-```
-
-### Prepare data & run
+### Prepare data
 
 Download the weights from the [Huggingface BioGPT page](https://huggingface.co/microsoft/biogpt/tree/main) and place them into a `weights` folder. Your weights folder should look something like this:
 
@@ -97,10 +89,18 @@ Then,
 python convert.py --dir-model ./weights/ --out-dir ./ggml_weights
 ```
 
-## API
+### Build
 
-```java
-./biogpt -h
+```bash
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release
+```
+
+### Run
+
+```bash
+$ ./bin/biogpt -h
 usage: ./biogpt [options]
 
 options:
