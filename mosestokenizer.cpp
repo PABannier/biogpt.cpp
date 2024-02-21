@@ -97,11 +97,11 @@ std::string perluniprops_chars(const std::string & category) {
 }
 
 namespace re_patterns {
-    std::string isAlnum = perluniprops_chars("isAlnum");
-    std::string isAlpha = perluniprops_chars("isAlpha");
-    std::string isLower = perluniprops_chars("isLower");
-    std::string isN     = perluniprops_chars("isN");
-    std::string isSc    = perluniprops_chars("isSc");
+    std::string isAlnum = perluniprops_chars("IsAlnum");
+    std::string isAlpha = perluniprops_chars("IsAlpha");
+    std::string isLower = perluniprops_chars("IsLower");
+    std::string isN     = perluniprops_chars("IsN");
+    std::string isSc    = perluniprops_chars("IsSc");
 
     std::regex DEDUPLICATE_SPACE("\\s+");
     std::regex ASCII_JUNK       ("[\\x00-\\x1F]");
